@@ -2,12 +2,23 @@
 
 在瀏覽器就能玩的台灣十六張麻將。開房拿到 **4 位數房號**，朋友輸入房號就能一起打；人數不夠時**空位由電腦補上**（2～3 個人也能玩）。也保留「單機玩（對電腦）」模式。
 
+**直接玩**
+- GitHub Pages（單機秒開，線上模式自動連到 Render 伺服器）：<https://190boy.github.io/taiwan-mahjong-online/>
+- Render（同一套畫面，由伺服器直接提供）：<https://mahjong-online-wee6.onrender.com>
+
+單機與線上是**同一份程式碼**（`docs/` 資料夾）：Render 用 `server.js` 提供它，GitHub Pages 直接發佈 `docs/`。
+從 Pages 打開時，線上模式會連 `wss://mahjong-online-wee6.onrender.com/ws`；要換伺服器可在網址加 `?server=wss://你的主機/ws`。
+
 - 伺服器負責所有牌局邏輯（洗牌、判胡、計台），每個人只會收到自己的手牌，無法作弊
 - 吃／碰／槓／胡、自摸、補花、流局、台數計算、連莊與累計分數
 - 出牌限時 20 秒、吃碰槓胡限時 9 秒（畫面有倒數，時間到自動處理）
 - 重新整理或斷線：同一支手機／電腦再打開網址，會自動回到原本的座位；斷線期間由電腦代打
 - 角色頭像（眨眼、搖頭晃腦、胡牌開心、放槍難過）、音效與國語喊牌在每個人自己的裝置上播放
-- 房間沒人在線 10 分鐘後自動清除
+- 房間沒人在線 10 分鐘後自動清除；分頁切到背景超過 10 分鐘、或 30 分鐘沒操作會自動斷線（不會讓免費主機一直醒著）
+- 規則：搶槓、天胡、地胡、八仙過海、七搶一、獨聽；摸牌後任何一輪都能加槓／暗槓
+- 電腦難度：簡單／普通／困難（會看現物、筋、牌河做防守）
+- 線上快捷聊天（固定短語＋表情，會顯示對話泡泡）
+- 戰績：單機每個角色的戰績、線上本房計分板、自己的線上生涯戰績（存在瀏覽器裡）
 
 ---
 
@@ -55,7 +66,7 @@
 
 ### 之後要更新程式
 
-改好的檔案推到 GitHub 的 `main` 分支，Render 會自動重新部署。
+改好的檔案推到 GitHub 的 `main` 分支，Render 會自動重新部署，GitHub Pages 也會自動更新（設定：Settings → Pages → Deploy from branch → `main` / `/docs`）。
 
 ---
 
@@ -73,6 +84,9 @@ npm start            # 打開 http://localhost:3000
 | 檔案 | 用途 |
 |---|---|
 | `server.js` | 網頁伺服器＋WebSocket 房間與牌局（伺服器權威） |
-| `logic.js` | 麻將規則、判胡、計台、電腦 AI（伺服器與單機模式共用） |
-| `public/index.html` | 遊戲畫面（大廳、房間、牌桌、單機模式全在這一個檔案） |
+| `docs/index.html` | 畫面與樣式 |
+| `docs/logic.js` | 麻將規則、判胡、計台、電腦 AI（伺服器與單機模式共用） |
+| `docs/app.js` | 介面、頭像、大廳／線上連線、聊天、戰績 |
+| `docs/avatar-img.js` | 角色頭像圖片 |
+| `test/` | `node test/rules.test.js` 規則測試、`node test/ai-sim.js normal hard 200` AI 對戰模擬 |
 | `render.yaml` | Render Blueprint 設定 |

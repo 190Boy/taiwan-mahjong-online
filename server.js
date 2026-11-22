@@ -5,24 +5,29 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
-const MJ = require('./logic.js');
+const MJ = require('./docs/logic.js');
 
 const PORT = +process.env.PORT || 3000;
 const TURN_MS = +process.env.TURN_MS || 20000;     // 出牌時限
 const CLAIM_MS = +process.env.CLAIM_MS || 9000;    // 吃碰槓胡時限
 const DELAY_SCALE = process.env.DELAY_SCALE ? +process.env.DELAY_SCALE : 1; // 動作間隔倍率（測試用）
+const IDLE_CLOSE_MS = +process.env.IDLE_CLOSE_MS || 30 * 60 * 1000;   // 房間 30 分鐘沒人操作就斷線
 const ROOM_IDLE_MS = +process.env.ROOM_IDLE_MS || 10 * 60 * 1000;          // 沒人在線多久後清掉房間
-const INDEX = path.join(__dirname, 'public', 'index.html');
+const PUB = path.join(__dirname, 'docs');
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'application/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml', '.json': 'application/json' };
 const AI_NAMES = ['小藍', '阿明', '小美', '阿伯', '阿嬤', '王小姐', '喵喵', '小傑', '老張', '阿姨'];
 
 /* ---------- HTTP：提供前端頁面 ---------- */
 const server = http.createServer((req, res) => {
   const u = (req.url || '/').split('?')[0];
   if (u === '/health' || u === '/healthz') { res.writeHead(200, { 'content-type': 'text/plain' }); return res.end('ok'); }
-  if (u === '/' || u === '/index.html') {
-    return fs.readFile(INDEX, (e, d) => {
-      if (e) { res.writeHead(500); return res.end('index.html missing'); }
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' });
+  let rel = '';
+  try { rel = decodeURIComponent(u === '/' ? '/index.html' : u); } catch (e) { rel = '/x'; }
+  const file = path.normalize(path.join(PUB, rel));
+  if (file.startsWith(PUB + path.sep) && MIME[path.extname(file)]) {
+    return fs.readFile(file, (e, d) => {
+      if (e) { res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }); return res.end('找不到頁面'); }
+      res.writeHead(200, { 'content-type': MIME[path.extname(file)], 'cache-control': 'no-cache' });
       res.end(d);
     });
   }
@@ -40,10 +45,13 @@ function newCode() { let c; do { c = String(1000 + Math.floor(Math.random() * 90
 const online = (room, s) => !!(room.seats[s] && room.seats[s].ws);
 const send = (ws, msg) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg)); };
 
+const blankStat = () => ({ hands: 0, wins: 0, tsumo: 0, dealins: 0, tai: 0, pts: 0 });
+const CHAT_N = 16;
 function createRoom() {
   const code = newCode();
   const room = { code, seats: [null, null, null, null], session: new MJ.Session(), game: null, phase: 'lobby',
-    lastActive: Date.now(), ready: new Set(), pid: 0, ai: [null, null, null, null], dead: false };
+    lastActive: Date.now(), ready: new Set(), pid: 0, ai: [null, null, null, null], dead: false,
+    level: 'normal', created: Date.now(), stats: [0, 1, 2, 3].map(blankStat), lastMsg: Date.now() };
   rooms.set(code, room);
   return room;
 }
@@ -65,7 +73,8 @@ function seatInfo(room, s) {
 }
 function roomMsg(room, me) {
   return { t: 'room', code: room.code, phase: room.phase, mySeat: me, seats: rot([0, 1, 2, 3].map(s => seatInfo(room, s)), me),
-    absSeats: [0, 1, 2, 3].map(s => seatInfo(room, s)), isHost: !!(room.seats[me] && room.seats[me].host) };
+    absSeats: [0, 1, 2, 3].map(s => seatInfo(room, s)), isHost: !!(room.seats[me] && room.seats[me].host),
+    level: room.level, created: room.created, stats: rot(room.stats, me) };
 }
 function broadcastRoom(room) { fillAI(room); room.seats.forEach((p, s) => p && send(p.ws, roomMsg(room, s))); }
 
@@ -157,12 +166,16 @@ function startHand(room) {
   if (room.phase === 'playing' || room.dead) return;
   fillAI(room);
   room.phase = 'playing'; room.ready.clear();
-  const g = room.session.newGame({ controllers: [0, 1, 2, 3].map(s => makeCtrl(room, s)),
+  const g = room.session.newGame({ aiLevel: room.level, controllers: [0, 1, 2, 3].map(s => makeCtrl(room, s)),
     onEvent: (ev, d) => onGameEvent(room, ev, d), delay: ms => sleep(room, ms) });
   room.game = g;
   broadcastRoom(room);
   g.play().then(r => {
     room.session.apply(r);
+    for (let s = 0; s < 4; s++) {
+      const st = room.stats[s]; st.hands++; st.pts += r.payments[s];
+      if (r.type === 'win') { if (r.winner === s) { st.wins++; st.tai += r.total || 0; if (r.self) st.tsumo++; } else if (r.loser === s) st.dealins++; }
+    }
     room.phase = 'result';
     setTimeout(() => {
       if (room.dead) return;
@@ -180,7 +193,7 @@ function maybeAgain(room) {
 }
 
 /* ---------- WebSocket ---------- */
-const wss = new WebSocketServer({ server, path: '/ws' });
+const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 8 * 1024 });
 wss.on('connection', ws => {
   ws.isAlive = true; ws.on('pong', () => { ws.isAlive = true; });
   ws.ctx = null; // { room, seat }
@@ -195,7 +208,7 @@ function cleanCi(ci) { ci = +ci; return Number.isInteger(ci) && ci >= 0 && ci < 
 function attach(ws, room, s, isNew) {
   const p = room.seats[s];
   if (p.ws && p.ws !== ws) { send(p.ws, { t: 'kicked', msg: '你在別的分頁連線了' }); p.ws.ctx = null; try { p.ws.close(); } catch (e) { } }
-  p.ws = ws; ws.ctx = { room, seat: s }; room.lastActive = Date.now();
+  p.ws = ws; ws.ctx = { room, seat: s }; room.lastActive = room.lastMsg = Date.now();
   send(ws, { t: 'joined', code: room.code, seat: s, token: p.token, rejoin: !isNew });
   broadcastRoom(room);
   if (room.game && room.game.players) send(ws, { t: 'state', ev: 'sync', data: {}, view: viewFor(room, s) });
@@ -230,16 +243,26 @@ function handle(ws, m) {
       if (s < 0) return send(ws, { t: 'err', code: 'full', msg: '房間已滿（4 人）' });
       const hasHost = room.seats.some(p => p && p.host);
       room.seats[s] = { name: cleanName(m.name), ci: cleanCi(m.ci), token: token(), ws: null, host: !hasHost, pending: null };
+      room.stats[s] = blankStat();
       if (room.ai[s] && room.ai[s].ci === room.seats[s].ci) room.ai[s] = null;
       return attach(ws, room, s, true);
     }
   }
   if (!c) return send(ws, { t: 'err', msg: '尚未加入房間' });
-  const { room, seat } = c; const p = room.seats[seat]; room.lastActive = Date.now();
+  const { room, seat } = c; const p = room.seats[seat]; room.lastActive = Date.now(); if (m.t !== 'ping') room.lastMsg = Date.now();
   switch (m.t) {
     case 'start': if (p.host && room.phase === 'lobby') startHand(room); break;
     case 'act': if (p.pending && p.pending.pid === m.pid) p.pending.done(m.d || {}); break;
     case 'again': room.ready.add(seat); if (p.host && m.force) startHand(room); else maybeAgain(room); break;
+    case 'level': if (p.host && room.phase === 'lobby' && MJ.LEVEL_NAMES[m.v]) { room.level = m.v; broadcastRoom(room); } break;
+    case 'chat': {
+      const i = +m.i; if (!Number.isInteger(i) || i < 0 || i >= CHAT_N) break;
+      const now = Date.now(); p.chatLog = (p.chatLog || []).filter(t => now - t < 20000);
+      if (p.chatLog.length >= 6 || (p.chatLog.length && now - p.chatLog[p.chatLog.length - 1] < 1000)) { send(ws, { t: 'err', code: 'slow', msg: '聊天太快了，休息一下～' }); break; }
+      p.chatLog.push(now);
+      room.seats.forEach((q, s) => q && q.ws && send(q.ws, { t: 'chat', seat: rel(seat, s), i }));
+      break;
+    }
     case 'profile': if (room.phase === 'lobby') { p.name = cleanName(m.name); p.ci = cleanCi(m.ci); broadcastRoom(room); } break;
     case 'leave': detachSeat(ws, true); send(ws, { t: 'left' }); break;
   }
@@ -259,7 +282,10 @@ setInterval(() => {
   wss.clients.forEach(ws => { if (!ws.isAlive) return ws.terminate(); ws.isAlive = false; try { ws.ping(); } catch (e) { } });
   const now = Date.now();
   for (const [code, room] of rooms) {
-    if (room.seats.some(p => p && p.ws)) { room.lastActive = now; continue; }
+    if (room.seats.some(p => p && p.ws)) {
+      if (now - room.lastMsg > IDLE_CLOSE_MS) { for (const p of room.seats) if (p && p.ws) { send(p.ws, { t: 'idle' }); try { p.ws.close(); } catch (e) { } } }
+      else { room.lastActive = now; continue; }
+    }
     if (now - room.lastActive > ROOM_IDLE_MS) {
       room.dead = true;
       for (const p of room.seats) if (p && p.pending) { clearTimeout(p.pending.timer); p.pending = null; }

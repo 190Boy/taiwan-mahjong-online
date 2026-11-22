@@ -132,11 +132,12 @@ const MJ = (function () {
   }
 
   /* ================= 遊戲 ================= */
+  class SpecialWin { constructor(result) { this.result = result; } }
   class Game {
     constructor(o) {
       this.dealer = o.dealer || 0; this.streak = o.streak || 0; this.roundWind = o.roundWind || 0;
       this.ctrls = o.controllers; this.delay = o.delay || (() => Promise.resolve());
-      this.emit = o.onEvent || (() => { }); this.rng = o.rng || Math.random;
+      this.emit = o.onEvent || (() => { }); this.rng = o.rng || Math.random; this.aiLevel = o.aiLevel || 'normal';
       this.over = false; this.players = null; this.log = [];
     }
     seatWind(s) { return (s - this.dealer + 4) % 4; }
@@ -146,6 +147,7 @@ const MJ = (function () {
       this.players = [0, 1, 2, 3].map(s => ({ seat: s, hand: [], melds: [], flowers: [], discards: [] }));
       for (let r = 0; r < 16; r++) for (let k = 0; k < 4; k++) this.players[(this.dealer + k) % 4].hand.push(this.wall.shift());
       this.turn = this.dealer; this.lastDiscard = null; this.justDrew = null; this.kongFlag = false; this.turns = 0;
+      this.draws = [0, 0, 0, 0]; this.anyCall = false; this.robFlag = false;
     }
     seenCounts(seat) {
       const c = new Array(34).fill(0);
@@ -164,6 +166,7 @@ const MJ = (function () {
         p.hand = p.hand.filter(x => !isFlower(x.t));
         for (const f of fl) {
           p.flowers.push(f); this.emit('flower', { seat, tile: f });
+          this.checkFlowers(seat, f);
           p.hand.push(this.wall.pop());
         }
         await this.delay(250);
@@ -176,12 +179,37 @@ const MJ = (function () {
         const tile = fromBack ? this.wall.pop() : this.wall.shift();
         if (isFlower(tile.t)) {
           p.flowers.push(tile); this.emit('flower', { seat, tile });
+          this.checkFlowers(seat, tile);
           await this.delay(350); fromBack = true; continue;
         }
-        p.hand.push(tile); this.justDrew = { seat, id: tile.id }; this.drawn = tile;
+        p.hand.push(tile); this.justDrew = { seat, id: tile.id }; this.drawn = tile; this.draws[seat]++;
         this.emit('draw', { seat, tile, fromBack });
         return tile;
       }
+    }
+    checkFlowers(seat, tile) { // 八仙過海 / 七搶一：立即胡牌
+      const p = this.players[seat];
+      if (p.flowers.length === 8) throw new SpecialWin(this.settle(seat, null, tile, [{ name: '八仙過海', tai: 8 }], { special: '八仙過海' }));
+      const holder = this.players.find(q => q.seat !== seat && q.flowers.length === 7);
+      if (holder && p.flowers.length === 1) throw new SpecialWin(this.settle(holder.seat, seat, tile, [{ name: '七搶一', tai: 8 }], { special: '七搶一' }));
+    }
+    async robKong(from, tile) { // 加槓時其他家可搶槓胡
+      const cands = [];
+      for (let k = 1; k <= 3; k++) {
+        const s = (from + k) % 4, c = countsOf(this.players[s].hand); c[tile.t]++;
+        if (isWinCounts(c, this.need(s))) cands.push(s);
+      }
+      for (const s of cands) {
+        const o = { hu: true, pon: false, kong: false, chi: [], rob: true };
+        this.emit('prompt', { seat: s, tile, opts: o });
+        const d = await this.ctrls[s].claim(this, s, tile, o);
+        if (d && d.type === 'hu') {
+          const fp = this.players[from]; fp.hand.splice(fp.hand.findIndex(x => x.id === tile.id), 1);
+          this.players[s].hand.push(tile); this.robFlag = true; this.justDrew = null;
+          return this.win(s, from, tile);
+        }
+      }
+      return null;
     }
     need(seat) { return 5 - this.players[seat].melds.length; }
     turnOptions(seat, canDraw) {
@@ -194,6 +222,10 @@ const MJ = (function () {
       return o;
     }
     async play() {
+      try { return await this.playInner(); }
+      catch (e) { if (e instanceof SpecialWin) return e.result; throw e; }
+    }
+    async playInner() {
       this.setup(); this.emit('start', {});
       await this.delay(400);
       for (let k = 0; k < 4; k++) await this.initialFlowers((this.dealer + k) % 4);
@@ -223,6 +255,12 @@ const MJ = (function () {
         if (d.type === 'kong') {
           const k = opts.kongs.find(k => k.t === d.t && k.kind === d.kind);
           if (k) {
+            if (k.kind === 'add') {
+              const rt = p.hand.find(x => x.t === k.t);
+              const rob = await this.robKong(seat, rt);
+              if (rob) return { type: 'win', result: rob };
+            }
+            this.anyCall = true;
             this.selfKong(seat, k);
             await this.delay(600);
             const t = await this.drawTile(seat, true);
@@ -317,7 +355,7 @@ const MJ = (function () {
           const take = []; p.hand = p.hand.filter(x => { if (x.t === tile.t && take.length < n) { take.push(x); return false; } return true; });
           this.players[from].discards.pop();
           p.melds.push({ type: d.type === 'kong' ? 'mkong' : 'pon', t: tile.t, tiles: [...take, tile], from, claimed: tile.id });
-          this.justDrew = null; this.turn = s;
+          this.justDrew = null; this.turn = s; this.anyCall = true;
           this.emit('claim', { seat: s, type: d.type, tile, from });
           await this.delay(650);
           return { type: d.type, seat: s };
@@ -330,7 +368,7 @@ const MJ = (function () {
         this.players[from].discards.pop();
         const tiles = [...take, tile].sort((a, b) => a.t - b.t);
         p.melds.push({ type: 'chi', t: tiles[0].t, tiles, from, claimed: tile.id });
-        this.justDrew = null; this.turn = cs;
+        this.justDrew = null; this.turn = cs; this.anyCall = true;
         this.emit('claim', { seat: cs, type: 'chi', tile, from });
         await this.delay(650);
         return { type: 'chi', seat: cs };
@@ -339,7 +377,10 @@ const MJ = (function () {
     }
     score(seat, winTile, self) {
       const p = this.players[seat]; const c = countsOf(p.hand); const need = this.need(seat);
-      const flags = { kong: this.kongFlag && self, haidi: self && this.wall.length <= RESERVE, hedi: !self && this.wall.length <= RESERVE };
+      const flags = { kong: this.kongFlag && self, haidi: self && this.wall.length <= RESERVE, hedi: !self && this.wall.length <= RESERVE && !this.robFlag,
+        rob: !self && this.robFlag, tian: false, di: false, single: false };
+      if (self && this.draws && !this.anyCall && this.draws[seat] === 1) { if (seat === this.dealer) flags.tian = true; else flags.di = true; }
+      { const c1 = c.slice(); c1[winTile.t]--; flags.single = waits(c1, need).length === 1; }
       let best = null;
       for (const d of decompose(c, need)) {
         const items = this.taiItems(p, d, winTile, self, flags);
@@ -353,7 +394,9 @@ const MJ = (function () {
       const exposed = p.melds.filter(m => m.type !== 'akong');
       const menqing = exposed.length === 0;
       const sw = this.seatWind(p.seat);
-      if (menqing && self) add('門清自摸', 3);
+      if (flags.tian) add('天胡', 24);
+      else if (flags.di) add('地胡', 16);
+      else if (menqing && self) add('門清自摸', 3);
       else { if (menqing) add('門清', 1); if (self) add('自摸', 1); }
       const sets = d.sets.map(s => ({ k: s.k, t: s.t, conc: true }))
         .concat(p.melds.map(m => ({ k: m.type === 'chi' ? 'c' : 'p', t: m.t, conc: m.type === 'akong' })));
@@ -390,28 +433,33 @@ const MJ = (function () {
         if (have.length === 4) add('花槓 ' + FLOWERS.slice(g, g + 4).join(''), 2);
         else if (ft.includes(34 + g + sw)) add('正花 ' + FLOWERS[g + sw], 1);
       }
+      if (flags.single) add('獨聽', 1);
+      if (flags.rob) add('搶槓', 1);
       if (flags.kong) add('槓上開花', 1);
       if (flags.haidi) add('海底撈月', 1);
       if (flags.hedi) add('河底撈魚', 1);
       return items;
     }
     win(seat, from, tile) {
+      const sc = this.score(seat, tile, from === null);
+      return this.settle(seat, from, tile, sc.items, {});
+    }
+    settle(seat, from, tile, items, extra) {
       this.over = true;
       const self = from === null;
-      const sc = this.score(seat, tile, self);
+      const total = items.reduce((a, b) => a + b.tai, 0);
       const dealerTai = 1 + 2 * this.streak;
       const dealerItems = [{ name: '莊家', tai: 1 }];
       if (this.streak > 0) dealerItems.push({ name: `連${this.streak}拉${this.streak}`, tai: 2 * this.streak });
       const payments = [0, 0, 0, 0]; const detail = [];
       const payers = self ? [0, 1, 2, 3].filter(s => s !== seat) : [from];
       for (const s of payers) {
-        const tai = sc.total + ((seat === this.dealer || s === this.dealer) ? dealerTai : 0);
+        const tai = total + ((seat === this.dealer || s === this.dealer) ? dealerTai : 0);
         const amt = BASE + PER * tai;
         payments[s] -= amt; payments[seat] += amt; detail.push({ seat: s, tai, amt });
       }
-      const result = { type: 'win', winner: seat, loser: from, self, tile, items: sc.items, total: sc.total,
-        dealer: this.dealer, dealerItems, dealerTai, payments, detail,
-        kongFlower: this.kongFlag && self };
+      const result = Object.assign({ type: 'win', winner: seat, loser: from, self, tile, items, total,
+        dealer: this.dealer, dealerItems, dealerTai, payments, detail, kongFlower: this.kongFlag && self, rob: this.robFlag }, extra);
       this.result = result;
       this.emit('win', result);
       return result;
@@ -439,68 +487,131 @@ const MJ = (function () {
     const n = t % 9;
     return (n === 0 || n === 8) ? 2 : (n === 1 || n === 7) ? 3 : 4;
   }
-  const AI = {
-    isHuman: false,
-    chooseDiscard(g, seat) {
-      const p = g.players[seat]; const c = countsOf(p.hand); const need = g.need(seat);
-      const seen = g.seenCounts(seat);
-      let best = null;
-      const types = [...new Set(p.hand.map(x => x.t))];
-      const evals = types.map(t => { c[t]--; const s = shanten(c, need); c[t]++; return { t, s }; });
-      const minS = Math.min(...evals.map(e => e.s));
-      for (const e of evals) {
-        if (e.s > minS) continue;
-        c[e.t]--;
-        let uk = 0;
-        for (const u of nearTypes(c)) {
-          const remain = 4 - seen[u] + (u === e.t ? 1 : 0);
-          if (remain <= 0 || c[u] >= 4) continue;
-          c[u]++; if (shanten(c, need) < e.s) uk += remain; c[u]--;
-        }
-        c[e.t]++;
-        const score = uk * 10 - tileValue(g, seat, e.t, c);
-        if (!best || score > best.score) best = { t: e.t, score };
-      }
-      return p.hand.find(x => x.t === best.t).id;
-    },
-    turn(g, seat, opts) {
-      if (opts.tsumo) return { type: 'tsumo' };
-      const p = g.players[seat]; const c = countsOf(p.hand); const need = g.need(seat);
-      if (opts.kongs.length) {
-        const s0 = bestDiscardShanten(c, need);
-        for (const k of opts.kongs) {
-          const c2 = c.slice();
-          if (k.kind === 'an') { c2[k.t] -= 4; if (shanten(c2, need - 1) <= s0) return { type: 'kong', kind: 'an', t: k.t }; }
-          else { c2[k.t] -= 1; if (shanten(c2, need) <= s0) return { type: 'kong', kind: 'add', t: k.t }; }
-        }
-      }
-      return { type: 'discard', id: AI.chooseDiscard(g, seat) };
-    },
-    claim(g, seat, tile, o) {
-      if (o.hu) return { type: 'hu' };
-      const p = g.players[seat]; const c = countsOf(p.hand); const need = g.need(seat); const t = tile.t;
-      const s0 = shanten(c, need);
-      const yak = t >= 31 || t === 27 + g.roundWind || t === 27 + g.seatWind(seat);
-      const open = p.melds.some(m => m.type !== 'akong');
-      if (o.kong) { const c2 = c.slice(); c2[t] -= 3; if (shanten(c2, need - 1) <= s0) return { type: 'kong' }; }
-      if (o.pon) {
-        const c2 = c.slice(); c2[t] -= 2; const s1 = bestDiscardShanten(c2, need - 1);
-        if (s1 < s0 && (yak || open || s0 <= 2)) return { type: 'pon' };
-        if (yak && s1 <= s0) return { type: 'pon' };
-      }
-      if (o.chi.length && ((open && s0 <= 3) || s0 <= 1)) {
-        let best = null;
-        for (const q of o.chi) {
-          const c2 = c.slice(); c2[q[0]]--; c2[q[1]]--; const s1 = bestDiscardShanten(c2, need - 1);
-          if (s1 < s0 && (!best || s1 < best.s)) best = { s: s1, q };
-        }
-        if (best) return { type: 'chi', seq: best.q };
-      }
-      return { type: 'pass' };
+  /* --- 防守：估計對手是否聽牌、每張牌的危險度 --- */
+  function threatOf(g, o) {
+    const q = g.players[o];
+    const open = q.melds.filter(m => m.type !== 'akong').length;
+    let th = open >= 4 ? 0.95 : open === 3 ? 0.75 : open === 2 ? 0.4 : open === 1 ? 0.15 : 0.05;
+    if (q.hand.length <= 4) th = Math.max(th, 0.9);
+    const late = Math.max(0, (36 - g.live) / 36);           // 牌牆越少，暗手也越可能聽牌
+    th = Math.min(1, th + late * 0.45);
+    return th;
+  }
+  function dangerOf(g, o, t, seen) {
+    const q = g.players[o];
+    if (q.discards.some(d => d.t === t)) return 0.08;                      // 現物
+    const ld = g.lastDiscard;                                                // 剛被打出、對方沒胡的牌
+    if (ld && ld.seat !== o && ld.tile.t === t) return 0.15;
+    if (isHonor(t)) {
+      if (seen[t] >= 3) return 0.02;
+      const yak = t >= 31 || t === 27 + g.roundWind || t === 27 + g.seatWind(o);
+      return (seen[t] === 2 ? 0.18 : 0.35) + (yak ? 0.08 : 0);
     }
+    const n = t % 9, base = t - n;
+    let d = [0.42, 0.52, 0.66, 0.78, 0.8, 0.78, 0.66, 0.52, 0.42][n];
+    const dis = new Set(q.discards.map(x => x.t));
+    const lo = n >= 3 && dis.has(t - 3), hi = n <= 5 && dis.has(t + 3);    // 筋
+    if (n <= 2) { if (hi) d *= 0.45; } else if (n >= 6) { if (lo) d *= 0.45; }
+    else { if (lo && hi) d *= 0.4; else if (lo || hi) d *= 0.72; }
+    if (seen[t] >= 3) d *= 0.6;                                              // 壁
+    const suits = new Set(q.melds.filter(m => m.t < 27).map(m => (m.t / 9) | 0));
+    const honorsOnly = q.melds.length && q.melds.every(m => m.t >= 27);
+    if (q.melds.length >= 2 && suits.size === 1) d *= suits.has(base / 9) ? 1.6 : 0.35;   // 對方做清/混一色
+    else if (honorsOnly) d *= 0.6;
+    return d;
+  }
+  const LEVEL = {
+    easy: { uke: false, defense: 0, mistake: 0.18, ponLoose: true },
+    normal: { uke: true, defense: 1, w: [10, 40, 110], thMin: 0.5, slack: 1, mistake: 0, ponLoose: false },
+    hard: { uke: true, defense: 1.4, w: [10, 40, 110], thMin: 0.5, slack: 1, mistake: 0, ponLoose: false },
+    v1: { uke: true, defense: 0, mistake: 0, ponLoose: false }            // 舊版（比較用）
   };
+  function makeAI(fixed) {
+    const lv = g => LEVEL[fixed || g.aiLevel] || LEVEL.normal;
+    const ai = {
+      isHuman: false,
+      level: fixed || null,
+      chooseDiscard(g, seat) {
+        const L = lv(g);
+        const p = g.players[seat]; const c = countsOf(p.hand); const need = g.need(seat);
+        const seen = g.seenCounts(seat);
+        const types = [...new Set(p.hand.map(x => x.t))];
+        const evals = types.map(t => { c[t]--; const s = shanten(c, need); c[t]++; return { t, s }; });
+        const minS = Math.min(...evals.map(e => e.s));
+        if (L.mistake && g.rng() < L.mistake) { const pool = evals.filter(e => e.s <= minS + 1); const pick = pool[Math.floor(g.rng() * pool.length)].t; return p.hand.find(x => x.t === pick).id; }
+        // 威脅
+        let threats = [];
+        if (L.defense) for (let k = 1; k <= 3; k++) { const o = (seat + k) % 4, th = threatOf(g, o); if (th >= (L.thMin || 0.35)) threats.push({ o, th }); }
+        const defending = threats.length > 0;
+        const W = L.w || [70, 170, 330], SL = L.slack == null ? 2 : L.slack;
+        const slack = defending ? Math.min(SL, minS >= 2 ? 2 : minS >= 1 ? 1 : 0) : 0;
+        const wDef = L.defense * W[Math.min(2, Math.max(0, minS))];
+        let best = null;
+        for (const e of evals) {
+          if (e.s > minS + slack) continue;
+          let uk = 0;
+          if (L.uke) {
+            c[e.t]--;
+            for (const u of nearTypes(c)) {
+              const remain = 4 - seen[u] + (u === e.t ? 1 : 0);
+              if (remain <= 0 || c[u] >= 4) continue;
+              c[u]++; if (shanten(c, need) < e.s) uk += remain; c[u]--;
+            }
+            c[e.t]++;
+          }
+          let score = uk * 10 - tileValue(g, seat, e.t, c) - (e.s - minS) * 260;
+          if (defending) { let dg = 0; for (const th of threats) dg += th.th * dangerOf(g, th.o, e.t, seen); score -= dg * wDef; }
+          if (!best || score > best.score) best = { t: e.t, score };
+        }
+        return p.hand.find(x => x.t === best.t).id;
+      },
+      turn(g, seat, opts) {
+        if (opts.tsumo) return { type: 'tsumo' };
+        const p = g.players[seat]; const c = countsOf(p.hand); const need = g.need(seat);
+        if (opts.kongs.length) {
+          const s0 = bestDiscardShanten(c, need);
+          for (const k of opts.kongs) {
+            const c2 = c.slice();
+            if (k.kind === 'an') { c2[k.t] -= 4; if (shanten(c2, need - 1) <= s0) return { type: 'kong', kind: 'an', t: k.t }; }
+            else { c2[k.t] -= 1; if (shanten(c2, need) <= s0) return { type: 'kong', kind: 'add', t: k.t }; }
+          }
+        }
+        return { type: 'discard', id: ai.chooseDiscard(g, seat) };
+      },
+      claim(g, seat, tile, o) {
+        if (o.hu) return { type: 'hu' };
+        const L = lv(g);
+        const p = g.players[seat]; const c = countsOf(p.hand); const need = g.need(seat); const t = tile.t;
+        const s0 = shanten(c, need);
+        const yak = t >= 31 || t === 27 + g.roundWind || t === 27 + g.seatWind(seat);
+        const open = p.melds.some(m => m.type !== 'akong');
+        if (o.kong) { const c2 = c.slice(); c2[t] -= 3; if (shanten(c2, need - 1) <= s0) return { type: 'kong' }; }
+        if (o.pon) {
+          const c2 = c.slice(); c2[t] -= 2; const s1 = bestDiscardShanten(c2, need - 1);
+          if (L.ponLoose && s1 < s0) return { type: 'pon' };
+          if (s1 < s0 && (yak || open || s0 <= 2)) return { type: 'pon' };
+          if (yak && s1 <= s0) return { type: 'pon' };
+        }
+        const chiOk = L.strictChi ? (open && s0 <= 2) || s0 <= 1 : (open && s0 <= 3) || s0 <= 1;
+        if (o.chi.length && (chiOk || L.ponLoose)) {
+          let best = null;
+          for (const q of o.chi) {
+            const c2 = c.slice(); c2[q[0]]--; c2[q[1]]--; const s1 = bestDiscardShanten(c2, need - 1);
+            if (s1 < s0 && (!best || s1 < best.s)) best = { s: s1, q };
+          }
+          if (best && (!L.strictChi || best.s <= 1 || open)) return { type: 'chi', seq: best.q };
+        }
+        return { type: 'pass' };
+      }
+    };
+    return ai;
+  }
+  const AI = makeAI(null);                       // 依 game.aiLevel（預設 普通）
+  const AIS = { easy: makeAI('easy'), normal: makeAI('normal'), hard: makeAI('hard'), v1: makeAI('v1') };
+  if (typeof process !== 'undefined' && process.env && process.env.MJ_TUNE) Object.assign(LEVEL.normal, JSON.parse(process.env.MJ_TUNE));
+  const LEVEL_NAMES = { easy: '簡單', normal: '普通', hard: '困難' };
 
   return { SUITS, NUMS, WINDS, FLOWERS, RESERVE, BASE, PER, tileName, isHonor, isFlower, isTerminal, rngFrom, makeWall,
-    countsOf, isWinCounts, decompose, waits, shanten, Game, Session, AI };
+    countsOf, isWinCounts, decompose, waits, shanten, Game, Session, SpecialWin, AI, AIS, LEVEL_NAMES, makeAI };
 })();
 if (typeof module !== 'undefined') module.exports = MJ;
