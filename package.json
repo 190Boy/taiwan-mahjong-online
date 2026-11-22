@@ -1,0 +1,16 @@
+{
+  "name": "mahjong-online",
+  "version": "1.0.0",
+  "description": "台灣十六張麻將 線上房號對戰（含單機模式）",
+  "main": "server.js",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
