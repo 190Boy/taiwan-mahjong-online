@@ -48,6 +48,8 @@ const send = (ws, msg) => { if (ws && ws.readyState === 1) ws.send(JSON.stringif
 
 const blankStat = () => ({ hands: 0, wins: 0, tsumo: 0, dealins: 0, tai: 0, pts: 0 });
 const CHAT_N = 16;
+let voiceSeq = 0;
+const RTC_MAX = 300, RTC_WIN = 20000;   // 語音信令：每個座位 20 秒最多 300 則（ICE 候選會比較多）
 function createRoom() {
   const code = newCode();
   const room = { code, seats: [null, null, null, null], session: new MJ.Session(), game: null, phase: 'lobby',
@@ -68,7 +70,8 @@ function fillAI(room) {
 }
 function seatInfo(room, s) {
   const p = room.seats[s];
-  if (p) return { name: p.name, ci: p.ci, human: true, online: !!p.ws, host: !!p.host, ready: room.ready.has(s) };
+  if (p) return { name: p.name, ci: p.ci, human: true, online: !!p.ws, host: !!p.host, ready: room.ready.has(s),
+    voice: p.voice && p.ws ? { id: p.voice.id, n: p.voice.n, muted: p.voice.muted } : null };
   const a = room.ai[s] || { ci: s, name: AI_NAMES[s] };
   return { name: a.name, ci: a.ci, human: false, online: false, host: false, ai: true };
 }
@@ -228,7 +231,7 @@ function maybeAgain(room) {
 }
 
 /* ---------- WebSocket ---------- */
-const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 8 * 1024 });
+const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 24 * 1024 });
 wss.on('connection', ws => {
   ws.isAlive = true; ws.on('pong', () => { ws.isAlive = true; });
   ws.ctx = null; // { room, seat }
@@ -255,7 +258,7 @@ function detach(ws) {
   const c = ws.ctx; if (!c) return; ws.ctx = null;
   const { room, seat } = c; const p = room.seats[seat];
   if (!p || p.ws !== ws) return;
-  p.ws = null; room.lastActive = Date.now(); room.ready.delete(seat);
+  p.ws = null; p.voice = null; room.lastActive = Date.now(); room.ready.delete(seat);
   if (p.pending) { const pd = p.pending; pd.done(pd.kind === 'turn' ? pd.fallback() : MJ.AI.claim(room.game, seat, pd.payload.tile, pd.payload.opts)); }
   broadcastRoom(room); maybeAgain(room);
 }
@@ -291,6 +294,22 @@ function handle(ws, m) {
     case 'act': if (p.pending && p.pending.pid === m.pid) p.pending.done(m.d || {}); break;
     case 'again': room.ready.add(seat); if (p.host && m.force) startHand(room); else maybeAgain(room); break;
     case 'lock': if (room.phase === 'playing') setLock(room, seat, !!m.on, '', !!m.autoHu, true); break;
+    case 'vjoin': p.voice = { id: crypto.randomBytes(4).toString('hex'), n: ++voiceSeq, muted: !!m.muted }; broadcastRoom(room); break;
+    case 'vleave': if (p.voice) { p.voice = null; broadcastRoom(room); } break;
+    case 'vmute': if (p.voice) { p.voice.muted = !!m.muted; broadcastRoom(room); } break;
+    case 'rtc': {                                   // 只轉送 offer / answer / ice 給同房、也在語音裡的玩家；聲音本身是 P2P，不經過伺服器
+      if (!p.voice) break;
+      const to = abs(+m.to, seat); const q = room.seats[to];
+      const d = m.d || {}; if (to === seat || !q || !q.ws || !q.voice || !['offer', 'answer', 'ice'].includes(d.type)) break;
+      if (m.vid !== q.voice.id) break;              // 對方已經換了一次語音連線 → 丟掉舊的信令
+      const now = Date.now(); p.rtcLog = (p.rtcLog || []).filter(t => now - t < RTC_WIN);
+      if (p.rtcLog.length >= RTC_MAX) break; p.rtcLog.push(now);
+      const out = { type: d.type };
+      if (d.type === 'ice') out.c = d.c && typeof d.c === 'object' ? { candidate: String(d.c.candidate || '').slice(0, 1000), sdpMid: d.c.sdpMid == null ? null : String(d.c.sdpMid).slice(0, 32), sdpMLineIndex: d.c.sdpMLineIndex == null ? null : +d.c.sdpMLineIndex } : null;
+      else out.sdp = String(d.sdp || '').slice(0, 15000);
+      send(q.ws, { t: 'rtc', from: rel(seat, to), vid: p.voice.id, d: out });
+      break;
+    }
     case 'level': if (p.host && room.phase === 'lobby' && MJ.LEVEL_NAMES[m.v]) { room.level = m.v; broadcastRoom(room); } break;
     case 'chat': {
       const i = +m.i; if (!Number.isInteger(i) || i < 0 || i >= CHAT_N) break;
@@ -320,7 +339,8 @@ setInterval(() => {
   const now = Date.now();
   for (const [code, room] of rooms) {
     if (room.seats.some(p => p && p.ws)) {
-      if (now - room.lastMsg > IDLE_CLOSE_MS) { for (const p of room.seats) if (p && p.ws) { send(p.ws, { t: 'idle' }); try { p.ws.close(); } catch (e) { } } }
+      const talking = room.seats.filter(p => p && p.ws && p.voice).length >= 2;   // 正在語音聊天的房間不算閒置
+      if (!talking && now - room.lastMsg > IDLE_CLOSE_MS) { for (const p of room.seats) if (p && p.ws) { send(p.ws, { t: 'idle' }); try { p.ws.close(); } catch (e) { } } }
       else { room.lastActive = now; continue; }
     }
     if (now - room.lastActive > ROOM_IDLE_MS) {

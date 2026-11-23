@@ -268,6 +268,18 @@ table.stt .av{--avw:30px;margin:auto}
 .lockAuto{display:inline-flex;align-items:center;gap:4px;font-size:14px;color:#fff;background:rgba(0,0,0,.3);border-radius:8px;padding:4px 8px;min-height:32px}
 .lockAuto input{width:18px;height:18px;accent-color:#ffd54f}
 @media (max-width:640px){.lockBadge{font-size:12px;padding:3px 8px}.lockAuto{font-size:12px}}
+/* 語音 */
+.av.vc-speak{box-shadow:0 0 0 3px #66bb6a,0 0 14px 3px rgba(102,187,106,.85)!important}
+.rmSeat.vc-speak .av{box-shadow:0 0 0 3px #66bb6a,0 0 14px 3px rgba(102,187,106,.85)}
+.vcBadge{position:fixed;z-index:22;transform:translate(-50%,-50%);background:#1b5e20;color:#fff;border:2px solid #a5d6a7;border-radius:999px;font-size:12px;line-height:1;padding:3px 5px;min-width:24px;min-height:24px;cursor:pointer;font-family:inherit;white-space:nowrap}
+.vcBadge.muted{background:#6d4c41;border-color:#ffab91}
+.vcBadge.local{background:#455a64;border-color:#b0bec5}
+.vcBadge.connecting{background:#37474f;opacity:.85}
+.vcBadge.failed{background:#b71c1c;border-color:#ffcdd2;font-size:11px;transform:translate(-80%,-50%)}
+.vcBadge.sm{font-size:9px;min-width:17px;min-height:17px;padding:1px 2px;border-width:1px}
+.vcBadge.sm.failed{font-size:9px}
+.tag.vc{background:#2e7d32}
+.vcAudio{display:none}
 </style>
 </head>
 <body>
@@ -278,6 +290,7 @@ table.stt .av{--avw:30px;margin:auto}
   <span class="grow"></span>
   <button id="bChar" title="更換角色">👤<span class="lbl"> 角色</span></button>
   <button id="bChat" title="快捷聊天" style="display:none">💬<span class="lbl"> 聊天</span></button>
+  <button id="bVc" title="語音通話（會詢問麥克風權限）" style="display:none">🎤<span class="lbl"> 加入語音</span></button><button id="bVcMute" title="麥克風靜音" style="display:none">🎙️<span class="lbl"> 靜音</span></button><button id="bVcLeave" title="離開語音" style="display:none">📴<span class="lbl"> 離開語音</span></button>
   <button id="bStats" title="戰績">📊<span class="lbl"> 戰績</span></button>
   <select id="aiLevel" title="電腦難度"><option value="easy">簡單</option><option value="normal">普通</option><option value="hard">困難</option></select>
   <button id="bSound" title="音效開關">🔊<span class="lbl"> 音效</span></button>
@@ -344,8 +357,8 @@ table.stt .av{--avw:30px;margin:auto}
 <div id="chatPal" class="hidden"></div>
 <div id="resultOv" class="overlay hidden"><div class="dialog" id="resultBox"></div></div>
 
-<script src="logic.js?v=5"></script>
-<script src="avatar-img.js?v=5"></script>
-<script src="app.js?v=5"></script>
+<script src="logic.js?v=6"></script>
+<script src="avatar-img.js?v=6"></script>
+<script src="app.js?v=6"></script>
 </body>
 </html>

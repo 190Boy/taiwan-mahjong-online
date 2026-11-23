@@ -605,8 +605,8 @@ const Lobby = {
 const LBL = ['你', '下家（右）', '對家（上）', '上家（左）'];
 function renderRoom() {
   const r = UI.room; if (!r) return;
-  const seats = r.seats.map((p, i) => `<div class="rmSeat ${i === 0 ? 'mine' : ''}">${avatarHTML(p.ci, 'idle', 'pk')}<div class="nm">${p.name}</div>
-    <div>${p.host ? '<span class="tag host">房主</span> ' : ''}${p.human ? (p.online ? '<span class="tag ok">已連線</span>' : '<span class="tag off">離線</span>') : '<span class="tag ai">空位・電腦</span>'}</div><small>${LBL[i]}</small></div>`).join('');
+  const seats = r.seats.map((p, i) => `<div class="rmSeat ${i === 0 ? 'mine' : ''}" data-vs="${i}">${avatarHTML(p.ci, 'idle', 'pk')}<div class="nm">${p.name}</div>
+    <div>${p.host ? '<span class="tag host">房主</span> ' : ''}${p.human ? (p.online ? '<span class="tag ok">已連線</span>' : '<span class="tag off">離線</span>') : '<span class="tag ai">空位・電腦</span>'}${p.voice ? (p.voice.muted ? ' <span class="tag vc">🔇 靜音</span>' : ' <span class="tag vc">🎤 語音中</span>') : ''}</div><small>${LBL[i]}</small></div>`).join('');
   const humans = r.seats.filter(p => p.human).length;
   const srvQ = new URLSearchParams(location.search).get('server'); const xq = srvQ ? '&server=' + encodeURIComponent(srvQ) : '';
   const link = location.origin + location.pathname + '?room=' + r.code + xq;
@@ -615,13 +615,16 @@ function renderRoom() {
     <div class="rmSeats">${seats}</div>
     <div class="rmLv">電腦難度：${r.isHost ? `<select id="rmLevel">${['easy', 'normal', 'hard'].map(k => `<option value="${k}" ${r.level === k ? 'selected' : ''}>${MJ.LEVEL_NAMES[k]}</option>`).join('')}</select>` : `<b>${MJ.LEVEL_NAMES[r.level || 'normal']}</b>`}</div>
     <div class="rmBtns">${r.isHost ? `<button class="big-btn" id="rmStart">▶ 開始（空位由電腦代打）</button>` : '<p>等待房主開始遊戲…</p>'}</div>
-    <div class="rmBtns"><button class="smallbtn" id="rmCopy">📋 複製邀請連結</button><button class="smallbtn" id="rmLeave">🚪 離開房間</button></div>`;
+    <div class="rmBtns"><button class="smallbtn" id="rmVoice">🎤 加入語音</button><button class="smallbtn" id="rmCopy">📋 複製邀請連結</button><button class="smallbtn" id="rmLeave">🚪 離開房間</button></div>`;
   if ($('#rmLevel')) $('#rmLevel').onchange = e => Net.send({ t: 'level', v: e.target.value });
   if ($('#rmStart')) $('#rmStart').onclick = () => { Snd.ctx || Snd.init(); Net.send({ t: 'start' }); };
   $('#rmCopy').onclick = () => { const done = () => { $('#rmCopy').textContent = '✅ 已複製'; }; if (navigator.clipboard) navigator.clipboard.writeText(link).then(done, () => prompt('複製這個連結：', link)); else prompt('複製這個連結：', link); };
   $('#rmLeave').onclick = () => leaveRoom();
+  $('#rmVoice').onclick = () => { if (Voice.on) Voice.leave(); else Voice.join(); };
+  if (typeof Voice !== 'undefined') Voice.render();
 }
 function leaveRoom() {
+  Voice.leave();
   Net.send({ t: 'leave' }); Profile.setSess(null);
   setTimeout(() => Net.close(), 200);
   UI.online = false; UI.room = null; UI.game = null; UI.pending = null; $('#bChat').style.display = 'none'; $('#aiLevel').style.display = '';
@@ -654,11 +657,12 @@ function onNet(m) {
       UI.online = true; Profile.setSess({ code: m.code, token: m.token });
       ov('#lobbyOv', false); ov('#startOv', false); $('#bChar').style.display = 'none'; $('#bChat').style.display = ''; $('#aiLevel').style.display = 'none'; lbMsg('');
       try { { const sq = new URLSearchParams(location.search).get('server'); history.replaceState(null, '', location.pathname + '?room=' + m.code + (sq ? '&server=' + encodeURIComponent(sq) : '')); } } catch (e) { }
+      setTimeout(() => Voice.onJoined(), 300);
       break;
     case 'room':
       UI.room = m; UI.online = true; applyRoomSeats();
       if (m.phase === 'lobby') { renderRoom(); ov('#roomOv', true); } else ov('#roomOv', false);
-      updateAgainBtn(); render();
+      updateAgainBtn(); render(); Voice.sync();
       break;
     case 'state': {
       UI.online = true; ov('#lobbyOv', false); ov('#roomOv', false);
@@ -683,11 +687,12 @@ function onNet(m) {
       if (m.code === 'noroom') { Profile.setSess(null); UI.online = false; ov('#roomOv', false); ov('#lobbyOv', true); Lobby.render(); }
       lbMsg(m.msg || '發生錯誤'); if (!$('#lobbyOv').classList.contains('hidden')) { } else callout(m.msg || '錯誤');
       break;
-    case 'kicked': Net.close(); UI.online = false; ov('#lobbyOv', true); Lobby.render(); lbMsg(m.msg); break;
+    case 'kicked': Voice.leave(true); Net.close(); UI.online = false; ov('#lobbyOv', true); Lobby.render(); lbMsg(m.msg); break;
     case 'left': break;
     case 'chat': Chat.show(m.seat, m.i); break;
+    case 'rtc': Voice.onSignal(m); break;
     case 'lock': { const was = !!UI.lock; UI.lock = m.on ? { autoHu: !!m.autoHu, waits: m.waits || null } : null; if (m.on && !was) callout('🔒 聽牌鎖定'); if (!m.on && m.why) callout(m.why); render(); break; }
-    case 'idle': Net.close(); UI.sleeping = true; showConn('閒置太久，已暫時斷線', '點一下畫面任何地方就會重新連線'); break;
+    case 'idle': Voice.leave(true); Net.close(); UI.sleeping = true; showConn('閒置太久，已暫時斷線', '點一下畫面任何地方就會重新連線'); break;
   }
 }
 
@@ -838,5 +843,208 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden) { clearTimeout(hideT); hideT = setTimeout(() => { if (Net.ws) { Net.close(); UI.sleeping = true; } }, 10 * 60 * 1000); }
   else { clearTimeout(hideT); if (UI.sleeping) { UI.sleeping = false; const sv = Profile.sess(); if (sv && sv.code) Net.connect(); } }
 });
+
+
+/* ================= 語音通話（WebRTC 點對點；伺服器只轉送信令，聲音不經過伺服器） ================= */
+const VOICE_ICE = window.MJ_ICE || [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
+const Voice = {
+  on: false, joining: false, stream: null, muted: false, myVid: null, myN: 0, peers: {}, meters: {}, speak: {}, localMutes: {}, needTap: false,
+  KEY: 'mj16_voice',
+  supported() { return !!(window.isSecureContext !== false && navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.RTCPeerConnection); },
+  async join() {
+    if (this.on || this.joining || !UI.online) return;
+    if (!this.supported()) { callout(window.isSecureContext === false ? '語音需要 https 網址' : '這個瀏覽器不支援語音'); return; }
+    this.joining = true; this.render();
+    try {
+      this.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
+    } catch (e) { this.joining = false; callout('沒有取得麥克風權限'); this.render(); return; }
+    this.joining = false; this.on = true; this.muted = false;
+    try { sessionStorage.setItem(this.KEY, '1'); } catch (e) { }
+    this.audioSession(true);
+    if (!Snd.ctx) Snd.init();
+    this.addMeter(0, this.stream);
+    Net.send({ t: 'vjoin', muted: false });
+    callout('🎤 已加入語音'); this.render();
+  },
+  leave(silent) {
+    for (const s of Object.keys(this.peers)) this.closePeer(+s);
+    if (this.stream) this.stream.getTracks().forEach(t => t.stop());
+    const was = this.on;
+    this.stream = null; this.on = false; this.joining = false; this.myVid = null; this.meters = {}; this.speak = {};
+    if (!silent) { if (was) Net.send({ t: 'vleave' }); try { sessionStorage.removeItem(this.KEY); } catch (e) { } }
+    this.audioSession(false); this.render();
+  },
+  toggleMute() {
+    if (!this.on) return;
+    this.muted = !this.muted; this.stream.getAudioTracks().forEach(t => { t.enabled = !this.muted; });
+    Net.send({ t: 'vmute', muted: this.muted }); this.render();
+  },
+  audioSession(on) {          // iOS 17+：通話時交給系統決定（播放＋錄音），離開後恢復成「播放」讓靜音鍵不影響音效
+    try { if (navigator.audioSession) navigator.audioSession.type = on ? 'play-and-record' : 'playback'; } catch (e) { }
+  },
+  onJoined() {
+    if (this.on || this.joining) return;
+    let want = false; try { want = sessionStorage.getItem(this.KEY) === '1'; } catch (e) { }
+    if (!want) return;
+    const ask = () => callout('點「🎤 加入語音」重新開啟語音');
+    if (navigator.permissions && navigator.permissions.query) navigator.permissions.query({ name: 'microphone' }).then(p => { if (p.state === 'granted') this.join(); else ask(); }, ask);
+    else ask();
+  },
+  sync() {
+    const r = UI.room; if (!r || !r.seats) return;
+    const me = r.seats[0];
+    if (this.on) {
+      if (me && me.voice) { this.myVid = me.voice.id; this.myN = me.voice.n; }
+      else if (this.myVid) {                        // 伺服器那邊掉了（重新連線）→ 重新加入
+        this.myVid = null; for (const s of Object.keys(this.peers)) this.closePeer(+s);
+        Net.send({ t: 'vjoin', muted: this.muted });
+      }
+    }
+    for (let s = 1; s < 4; s++) {
+      const v = r.seats[s] && r.seats[s].voice; const pe = this.peers[s];
+      if (!this.on || !this.myVid || !v) { if (pe) this.closePeer(s); continue; }
+      if (pe && pe.vid !== v.id) this.closePeer(s);
+      if (!this.peers[s]) this.makePeer(s, v, this.myN > v.n);   // 後加入的人發起連線，避免雙方同時 offer
+    }
+    this.render();
+  },
+  makePeer(s, v, offerer) {
+    let pc; try { pc = new RTCPeerConnection({ iceServers: VOICE_ICE }); } catch (e) { return; }
+    const pe = { pc, vid: v.id, state: 'connecting', q: [], audio: null, remoteSet: false, localMute: !!this.localMutes[v.id] };
+    this.peers[s] = pe;
+    this.stream.getTracks().forEach(t => pc.addTrack(t, this.stream));
+    pc.onicecandidate = e => { if (e.candidate) this.sig(s, { type: 'ice', c: e.candidate.toJSON ? e.candidate.toJSON() : e.candidate }); };
+    pc.ontrack = e => {
+      const st = (e.streams && e.streams[0]) || new MediaStream([e.track]);
+      if (!pe.audio) { const a = document.createElement('audio'); a.autoplay = true; a.setAttribute('playsinline', ''); a.className = 'vcAudio'; a.dataset.seat = s; document.body.appendChild(a); pe.audio = a; }
+      pe.audio.srcObject = st; pe.audio.muted = pe.localMute;
+      const pl = pe.audio.play(); if (pl && pl.catch) pl.catch(() => { this.needTap = true; callout('點一下畫面開始播放語音'); });
+      this.addMeter(s, st);
+    };
+    const upd = () => {
+      if (this.peers[s] !== pe) return;
+      const cs = pc.connectionState || '', is = pc.iceConnectionState || '';
+      if (cs === 'connected' || is === 'connected' || is === 'completed') { pe.state = 'connected'; clearTimeout(pe.timer); }
+      else if (cs === 'failed' || is === 'failed') pe.state = 'failed';
+      else if (cs === 'disconnected' || is === 'disconnected') pe.state = 'connecting';
+      this.render();
+    };
+    pc.onconnectionstatechange = upd; pc.oniceconnectionstatechange = upd;
+    pe.timer = setTimeout(() => { if (this.peers[s] === pe && pe.state !== 'connected') { pe.state = 'failed'; this.render(); } }, 20000);
+    if (offerer) (async () => {
+      try { const o = await pc.createOffer(); await pc.setLocalDescription(o); this.sig(s, { type: 'offer', sdp: pc.localDescription.sdp }); }
+      catch (e) { pe.state = 'failed'; this.render(); }
+    })();
+  },
+  sig(s, d) { const pe = this.peers[s]; if (pe) Net.send({ t: 'rtc', to: s, vid: pe.vid, d }); },
+  async onSignal(m) {
+    if (!this.on || !this.myVid) return;
+    const s = m.from, d = m.d || {}; let pe = this.peers[s];
+    if (!pe || pe.vid !== m.vid) {
+      const v = UI.room && UI.room.seats[s] && UI.room.seats[s].voice;
+      if (!v || v.id !== m.vid || d.type !== 'offer') return;
+      if (pe) this.closePeer(s);
+      this.makePeer(s, v, false); pe = this.peers[s]; if (!pe) return;
+    }
+    const pc = pe.pc;
+    try {
+      if (d.type === 'offer') {
+        await pc.setRemoteDescription({ type: 'offer', sdp: d.sdp }); pe.remoteSet = true; await this.flush(pe);
+        const a = await pc.createAnswer(); await pc.setLocalDescription(a); this.sig(s, { type: 'answer', sdp: pc.localDescription.sdp });
+      } else if (d.type === 'answer') {
+        if (pc.signalingState !== 'have-local-offer') return;
+        await pc.setRemoteDescription({ type: 'answer', sdp: d.sdp }); pe.remoteSet = true; await this.flush(pe);
+      } else if (d.type === 'ice' && d.c) {
+        if (pe.remoteSet) await pc.addIceCandidate(d.c); else pe.q.push(d.c);
+      }
+    } catch (e) { console.warn('voice signal', e && e.message); }
+  },
+  async flush(pe) { for (const c of pe.q.splice(0)) { try { await pe.pc.addIceCandidate(c); } catch (e) { } } },
+  closePeer(s) {
+    const pe = this.peers[s]; if (!pe) return;
+    delete this.peers[s]; clearTimeout(pe.timer);
+    try { pe.pc.close(); } catch (e) { }
+    if (pe.audio) { try { pe.audio.srcObject = null; } catch (e) { } pe.audio.remove(); }
+    const mt = this.meters[s]; if (mt) { try { mt.src.disconnect(); } catch (e) { } delete this.meters[s]; }
+    delete this.speak[s];
+  },
+  toggleLocalMute(s) {
+    const pe = this.peers[s]; if (!pe) return;
+    pe.localMute = !pe.localMute; this.localMutes[pe.vid] = pe.localMute; if (pe.audio) pe.audio.muted = pe.localMute;
+    callout(pe.localMute ? '已在你這邊關掉這位的聲音' : '恢復這位的聲音'); this.render();
+  },
+  addMeter(s, stream) {
+    const ctx = Snd.ctx; if (!ctx || !stream.getAudioTracks().length) return;
+    try {
+      const old = this.meters[s]; if (old) try { old.src.disconnect(); } catch (e) { }
+      const src = ctx.createMediaStreamSource(stream), an = ctx.createAnalyser(); an.fftSize = 512; src.connect(an);
+      this.meters[s] = { src, an, buf: new Uint8Array(an.fftSize), hold: 0 };
+    } catch (e) { }
+  },
+  tick() {
+    const now = Date.now();
+    const key = [UI.online && !!UI.room, this.on, this.muted, this.joining].join();
+    if (key !== this._key) { this._key = key; this.render(); }
+    for (const k of Object.keys(this.meters)) {
+      const s = +k, m = this.meters[k]; m.an.getByteTimeDomainData(m.buf);
+      let sum = 0; for (let i = 0; i < m.buf.length; i++) { const x = (m.buf[i] - 128) / 128; sum += x * x; }
+      const rms = Math.sqrt(sum / m.buf.length); m.rms = rms;
+      if (rms > 0.035) m.hold = now + 350;
+      let sp = m.hold > now;
+      if (s === 0 && this.muted) sp = false;
+      const pe = this.peers[s]; if (pe && pe.localMute) sp = false;
+      const v = UI.room && UI.room.seats[s] && UI.room.seats[s].voice; if (s !== 0 && v && v.muted) sp = false;
+      this.speak[s] = sp;
+    }
+    this.paintSeats();
+  },
+  status(s) {
+    const r = UI.room; const v = r && r.seats && r.seats[s] && r.seats[s].voice; if (!v) return null;
+    if (s === 0) return this.on ? (this.muted ? 'muted' : 'on') : null;
+    const pe = this.peers[s];
+    if (!this.on) return v.muted ? 'muted' : 'on';           // 自己沒加入也看得到別人在語音裡
+    if (!pe) return 'connecting';
+    if (pe.state === 'failed') return 'failed';
+    if (v.muted) return 'muted';
+    if (pe.localMute) return 'local';
+    return pe.state === 'connected' ? 'on' : 'connecting';
+  },
+  paintSeats() {
+    const show = UI.online && UI.room && UI.game && $('#roomOv').classList.contains('hidden');
+    for (let s = 0; s < 4; s++) {
+      const av = Avatars.el(s); const st = show ? this.status(s) : null;
+      if (av) { av.classList.toggle('vc-speak', !!(st && this.speak[s])); av.classList.toggle('vc-in', !!st); }
+      let b = document.getElementById('vcb' + s);
+      if (!st) { if (b) b.style.display = 'none'; continue; }
+      if (!b) { b = document.createElement('button'); b.id = 'vcb' + s; b.className = 'vcBadge'; b.onclick = e => { e.stopPropagation(); if (s === 0) this.toggleMute(); else this.toggleLocalMute(s); }; document.body.appendChild(b); }
+      const txt = { on: '🎤', muted: '🔇', local: '🔈✕', connecting: '🎤…', failed: '⚠️ 語音連線失敗' }[st];
+      if (b.dataset.st !== st) { b.textContent = txt; b.dataset.st = st; b.className = 'vcBadge ' + st + (b.classList.contains('sm') ? ' sm' : ''); b.title = s === 0 ? '點一下切換靜音' : '點一下在你這邊關掉／打開這位的聲音'; }
+      const r = av.getBoundingClientRect();
+      if (!r.width) { b.style.display = 'none'; continue; }
+      const small = r.width < 44; b.classList.toggle('sm', small);
+      b.style.display = ''; b.style.left = Math.round(r.right - (small ? 0 : 12)) + 'px'; b.style.top = Math.round(r.bottom - (small ? 2 : 14)) + 'px';
+    }
+    // 房間大廳的座位
+    document.querySelectorAll('.rmSeat[data-vs]').forEach(el => { const s = +el.dataset.vs; const st = this.status(s); el.classList.toggle('vc-speak', !!(st && this.speak[s])); });
+  },
+  render() {
+    const on = UI.online && !!UI.room;
+    const j = $('#bVc'), mu = $('#bVcMute'), lv = $('#bVcLeave');
+    if (j) { j.style.display = on && !this.on ? '' : 'none'; j.disabled = this.joining; }
+    if (mu) { mu.style.display = on && this.on ? '' : 'none'; mu.innerHTML = this.muted ? '🔇<span class="lbl"> 取消靜音</span>' : '🎙️<span class="lbl"> 靜音</span>'; mu.classList.toggle('off', this.muted); }
+    if (lv) lv.style.display = on && this.on ? '' : 'none';
+    const rb = $('#rmVoice'); if (rb) rb.textContent = this.on ? '📴 離開語音' : (this.joining ? '🎤 連線中…' : '🎤 加入語音');
+    this.paintSeats();
+  }
+};
+$('#bVc').onclick = () => Voice.join();
+$('#bVcMute').onclick = () => Voice.toggleMute();
+$('#bVcLeave').onclick = () => Voice.leave();
+setInterval(() => { try { Voice.tick(); } catch (e) { } }, 120);
+document.addEventListener('pointerdown', () => {
+  if (!Voice.needTap) return; Voice.needTap = false;
+  for (const pe of Object.values(Voice.peers)) if (pe.audio) pe.audio.play().catch(() => { });
+}, { passive: true });
+window.addEventListener('pagehide', () => { if (Voice.on) Voice.leave(true); });
 
 if (/autostart/.test(location.hash)) $('#startBtn').click();
