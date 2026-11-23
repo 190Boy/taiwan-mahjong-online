@@ -68,6 +68,7 @@ const Snd = {
       const comp = this.ctx.createDynamicsCompressor(); this.master.disconnect(); this.master.connect(comp); comp.connect(this.ctx.destination);
       if (this.ctx.state !== 'running') this.ctx.resume();
       try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) { }   // iOS 17+：靜音鍵開著也能出聲
+      setTimeout(() => Clips.ctxReady(), 0);
     } catch (e) { this.ctx = null; }
     if ('speechSynthesis' in window) {
       const pick = () => {
@@ -114,16 +115,106 @@ const Snd = {
   },
   alert() { this.tone(880, .12, { type: 'sine', gain: .2 }); this.tone(1175, .16, { type: 'sine', gain: .2, when: .1 }); },
   sad() { [523, 466, 415, 349].forEach((f, i) => this.tone(f, .35, { type: 'triangle', gain: .2, when: i * .22 })); },
-  say(text, cancel = true) {
-    if (!this.on || !('speechSynthesis' in window)) return;
-    try {
+  say(text, cancel = true, seat = 0) { this.sayAs(charOfSeat(seat), text, cancel); },
+  sayAs(ci, text, cancel = true) {
+    if (!this.on) return;
+    if (Clips.play(ci, text, cancel)) { if (cancel && 'speechSynthesis' in window) try { speechSynthesis.cancel(); } catch (e) { } return; }
+    if (!('speechSynthesis' in window)) return;
+    try {                                                   // 後備：系統語音，依角色換聲音／音高／語速
       if (cancel) speechSynthesis.cancel();
-      if (!this.zhVoice) { const vs = speechSynthesis.getVoices(); this.zhVoice = vs.find(v => /zh[-_]TW/i.test(v.lang)) || vs.find(v => /zh[-_](HK|Hant)/i.test(v.lang)) || vs.find(v => /^zh/i.test(v.lang)) || null; }
-      const u = new SpeechSynthesisUtterance(text); u.lang = this.zhVoice ? this.zhVoice.lang : 'zh-TW'; if (this.zhVoice) u.voice = this.zhVoice;
-      u.rate = 1.1; u.pitch = 1.05; u.volume = Math.min(1, this.vol * 1.3); speechSynthesis.speak(u);
+      const pf = CHAR_TTS[ci] || CHAR_TTS[0], v = CharVoice.pick(ci);
+      const u = new SpeechSynthesisUtterance(text); u.lang = v ? v.lang : 'zh-TW'; if (v) u.voice = v;
+      u.rate = pf.rate; u.pitch = pf.pitch; u.volume = Math.min(1, this.vol * 1.3); speechSynthesis.speak(u);
     } catch (e) { }
   },
-  call(word) { if (this.voice) this.say(word); }
+  call(word, seat = 0) { if (this.voice) this.say(word, true, seat); }
+};
+const charOfSeat = s => { try { return seatChar(s); } catch (e) { return 0; } };
+/* ===== 角色語音 ===== */
+// 系統語音後備設定（g＝想要的性別；pitch/rate 依角色形象）
+const CHAR_TTS = [
+  { g: 'm', pitch: 1.05, rate: 1.15 },  // 小藍：陽光大學生
+  { g: 'm', pitch: 1.2, rate: 1.28 },   // 阿明：活潑少年
+  { g: 'f', pitch: 1.3, rate: 1.12 },   // 小美：甜美女生
+  { g: 'm', pitch: 0.6, rate: 0.85 },   // 阿伯：低沉慢
+  { g: 'f', pitch: 0.75, rate: 0.8 },   // 阿嬤：慢、偏低
+  { g: 'f', pitch: 1.0, rate: 1.05 },   // 王小姐：沉穩
+  { g: 'f', pitch: 1.85, rate: 1.2 },   // 喵喵：尖尖可愛
+  { g: 'm', pitch: 1.45, rate: 1.1 },   // 小傑：童聲
+  { g: 'm', pitch: 0.8, rate: 0.95 },   // 老張：渾厚
+  { g: 'f', pitch: 0.88, rate: 0.95 }   // 阿姨：溫暖稍低
+];
+const CharVoice = {
+  list: null, map: {},
+  gender(v) {
+    const n = (v.name + ' ' + (v.voiceURI || '')).toLowerCase();
+    if (/zhiwei|yunjhe|yunxi|yunyang|yunjian|kangkang|liang|li-mu|limu|danny|\bmale|男/.test(n)) return 'm';
+    if (/meijia|mei-jia|tingting|ting-ting|sinji|sin-ji|yating|hanhan|huihui|xiaoxiao|xiaoyi|hsiaochen|hsiaoyu|yaoyao|lili|shasha|female|女|google/.test(n)) return 'f';
+    return '';
+  },
+  refresh() {
+    if (!('speechSynthesis' in window)) return;
+    const vs = speechSynthesis.getVoices().filter(v => /^zh/i.test(v.lang)); if (!vs.length) return;
+    const rank = v => /zh[-_]TW|Hant/i.test(v.lang) ? 0 : /zh[-_]CN|Hans/i.test(v.lang) ? 1 : 2;   // 台灣 → 大陸 → 香港（粵語）
+    vs.sort((a, b) => rank(a) - rank(b) || (a.localService === b.localService ? 0 : a.localService ? -1 : 1));
+    this.list = vs; this.map = {};
+    const cnt = { m: 0, f: 0 };
+    CHAR_TTS.forEach((p, ci) => {
+      const top = vs.filter(v => rank(v) === rank(vs[0]));            // 先在同一種口音裡分配
+      let pool = top.filter(v => this.gender(v) === p.g); if (!pool.length) pool = vs.filter(v => this.gender(v) === p.g);
+      if (!pool.length) pool = top;
+      this.map[ci] = pool[(cnt[p.g]++) % pool.length];
+    });
+  },
+  pick(ci) { if (!this.list) this.refresh(); return this.map[ci] || null; }
+};
+if ('speechSynthesis' in window) { try { speechSynthesis.addEventListener('voiceschanged', () => CharVoice.refresh()); } catch (e) { } }
+// 預先錄好的角色語音（docs/voices/<角色>/pNN.mp3），用 Web Audio 播放，找不到就用上面的系統語音
+const Clips = {
+  base: 'voices/', man: null, manP: null, raw: {}, buf: {}, loading: {}, cur: null, failed: 0,
+  manifest() {
+    if (!this.manP) this.manP = location.protocol === 'file:' ? Promise.resolve(null) : fetch(this.base + 'voices.json', { cache: 'force-cache' }).then(r => r.ok ? r.json() : null).then(m => (this.man = m)).catch(() => null);
+    return this.manP;
+  },
+  load(ci) {
+    if (!(ci >= 0)) return Promise.resolve();
+    if (this.loading[ci]) return this.loading[ci].then(() => this.decodeAll(ci));
+    this.loading[ci] = this.manifest().then(async m => {
+      if (!m || !m.keys) return;
+      const raw = this.raw[ci] = this.raw[ci] || {}; const keys = Object.entries(m.keys); let i = 0;
+      const worker = async () => {
+        while (i < keys.length) {
+          const [w, k] = keys[i++];
+          try { const r = await fetch(`${this.base}${ci}/${k}.mp3`, { cache: 'force-cache' }); if (r.ok) raw[w] = await r.arrayBuffer(); else this.failed++; } catch (e) { this.failed++; }
+        }
+      };
+      await Promise.all([worker(), worker(), worker()]);
+    });
+    return this.loading[ci].then(() => this.decodeAll(ci));
+  },
+  want(cis) { for (const ci of cis) if (ci >= 0 && !this.loading[ci]) this.load(ci); },
+  decodeAll(ci) {
+    const ctx = Snd.ctx, raw = this.raw[ci]; if (!ctx || !raw) return Promise.resolve();
+    const buf = this.buf[ci] = this.buf[ci] || {};
+    return Promise.all(Object.keys(raw).map(w => new Promise(res => {
+      const ab = raw[w]; if (!ab) return res(); delete raw[w];
+      try { const p = ctx.decodeAudioData(ab, b => { buf[w] = b; res(); }, () => res()); if (p && p.catch) p.catch(() => res()); } catch (e) { res(); }
+    })));
+  },
+  ctxReady() { for (const ci of Object.keys(this.raw)) this.decodeAll(+ci); },
+  play(ci, text, cancel) {
+    const b = this.buf[ci] && this.buf[ci][text];
+    if (!b) { if (this.raw[ci] && this.raw[ci][text]) this.decodeAll(ci); return false; }
+    const ctx = Snd.ctx; if (!ctx || !Snd.master) return false;
+    try {
+      if (ctx.state !== 'running') ctx.resume();
+      if (cancel && this.cur) { try { this.cur.stop(); } catch (e) { } }
+      const src = ctx.createBufferSource(), g = ctx.createGain(); src.buffer = b; g.gain.value = 1.3;
+      src.connect(g); g.connect(Snd.master); src.start(); this.cur = src;
+      src.onended = () => { if (this.cur === src) this.cur = null; };
+      return true;
+    } catch (e) { return false; }
+  }
 };
 
 /* ================= 介面 ================= */
@@ -251,7 +342,9 @@ function render() {
     (d ? tileHTML(d.t, 'drawn ' + (UI.selected === d.id ? 'sel' : '') + (d.id === winId ? ' win' : ''), d.id) : '');
   renderActions();
 }
+function preloadVoices() { try { Clips.want([0, 1, 2, 3].map(charOfSeat)); } catch (e) { } }
 function renderActions() {
+  preloadVoices();
   const a = $('#actions'), pd = UI.pending; let h = '';
   const B = (act, label, cls) => `<button class="act ${cls}" data-act="${act}">${label}</button>`;
   if (pd && pd.kind === 'turn') {
@@ -310,12 +403,12 @@ function onEvent(type, d) {
   const g = UI.game;
   switch (type) {
     case 'draw': if (d.seat === 0) Snd.draw(); else Snd.softDraw(); break;
-    case 'discard': Snd.clack(); if (Snd.sayTile) Snd.say(tileName(d.tile.t)); break;
+    case 'discard': Snd.clack(); if (Snd.sayTile) Snd.say(tileName(d.tile.t), true, d.seat); break;
     case 'flower': Snd.flower(); break;
-    case 'claim': Avatars.react(d.seat); Snd[d.type](); Snd.call(CALL[d.type]); callout(`${NAMES[d.seat]}${d.seat === 0 ? '' : ' '}${CALL[d.type]}！`); break;
-    case 'kong': Avatars.react(d.seat); Snd.kong(); Snd.call('槓'); callout(`${NAMES[d.seat]} ${d.kind === 'an' ? '暗槓' : '加槓'}！`); break;
-    case 'win': Avatars.setAll([0, 1, 2, 3].map(s => s === d.winner ? 'happy' : (d.self || s === d.loser) ? 'sad' : 'idle')); Avatars.celebrate(d.winner); if (d.self) { Snd.tsumo(); Snd.call('自摸'); callout(`${NAMES[d.winner]} 自摸！`); } else { Snd.hu(); Snd.call('胡'); callout(`${NAMES[d.winner]} 胡！`); } UI.revealed = true; break;
-    case 'exhaust': Avatars.setAll(['sad', 'sad', 'sad', 'sad']); Snd.sad(); Snd.call('流局'); callout('流局'); UI.revealed = true; break;
+    case 'claim': Avatars.react(d.seat); Snd[d.type](); Snd.call(CALL[d.type], d.seat); callout(`${NAMES[d.seat]}${d.seat === 0 ? '' : ' '}${CALL[d.type]}！`); break;
+    case 'kong': Avatars.react(d.seat); Snd.kong(); Snd.call('槓', d.seat); callout(`${NAMES[d.seat]} ${d.kind === 'an' ? '暗槓' : '加槓'}！`); break;
+    case 'win': Avatars.setAll([0, 1, 2, 3].map(s => s === d.winner ? 'happy' : (d.self || s === d.loser) ? 'sad' : 'idle')); Avatars.celebrate(d.winner); if (d.self) { Snd.tsumo(); Snd.call('自摸', d.winner); callout(`${NAMES[d.winner]} 自摸！`); } else { Snd.hu(); Snd.call('胡', d.winner); callout(`${NAMES[d.winner]} 胡！`); } UI.revealed = true; break;
+    case 'exhaust': Avatars.setAll(['sad', 'sad', 'sad', 'sad']); Snd.sad(); Snd.call('流局', d.dealer || 0); callout('流局'); UI.revealed = true; break;
   }
   render();
 }
@@ -458,7 +551,7 @@ const Picker = {
       <input class="pkName" data-slot="${s}" maxlength="6" value="${(Setup.names[s] || '').replace(/"/g, '')}" placeholder="${s === 0 ? '你' : CHARS[Setup.chars[s]].name}"></div>`).join('');
     $('#pkChars').innerHTML = CHARS.map((c, i) => {
       const used = Setup.chars.indexOf(i);
-      return `<button class="pkChar ${used === this.slot ? 'on' : ''}" data-ci="${i}" title="${c.name}">${avatarHTML(i, 'idle', 'pk')}<span>${c.name}${used >= 0 && used !== this.slot ? `<small>（${['你', '下家', '對家', '上家'][used]}）</small>` : ''}</span></button>`;
+      return `<button class="pkChar ${used === this.slot ? 'on' : ''}" data-ci="${i}" title="${c.name}">${avatarHTML(i, 'idle', 'pk')}<span class="pkTry" data-try="${i}" title="試聽${c.name}的聲音">🔊</span><span>${c.name}${used >= 0 && used !== this.slot ? `<small>（${['你', '下家', '對家', '上家'][used]}）</small>` : ''}</span></button>`;
     }).join('');
     $('#pkHint').textContent = `正在選：${SEAT_LABEL[this.slot]}　點下方角色指定（已被選走的會互換）`;
   },
@@ -571,7 +664,7 @@ const Lobby = {
   render() {
     $('#lbAv').innerHTML = avatarHTML(Profile.ci, 'idle', 'pk');
     $('#lbName').value = Profile.name;
-    $('#lbChars').innerHTML = CHARS.map((c, i) => `<button class="pkChar ${i === Profile.ci ? 'on' : ''}" data-ci="${i}" title="${c.name}">${avatarHTML(i, 'idle', 'pk')}<span>${c.name}</span></button>`).join('');
+    $('#lbChars').innerHTML = CHARS.map((c, i) => `<button class="pkChar ${i === Profile.ci ? 'on' : ''}" data-ci="${i}" title="${c.name}">${avatarHTML(i, 'idle', 'pk')}<span class="pkTry" data-try="${i}" title="試聽${c.name}的聲音">🔊</span><span>${c.name}</span></button>`).join('');
     const q = new URLSearchParams(location.search).get('room'); if (q && !$('#lbCode').value) $('#lbCode').value = q.replace(/\D/g, '').slice(0, 4);
     $('#lbCreate').disabled = $('#lbJoinBtn').disabled = !ONLINE_OK;
 
@@ -821,7 +914,7 @@ const Chat = {
     b.style.left = x + 'px'; b.style.top = Math.max(4, r.top - b.offsetHeight - 6) + 'px';
     setTimeout(() => b.classList.add('out'), 2600); setTimeout(() => b.remove(), 3100);
     if (c.e) Avatars.flash(seat, c.e, 1800);
-    if (!c.emo && Snd.voice) Snd.say(c.t, false);
+    if (!c.emo && Snd.voice) Snd.say(c.t, false, seat);
     Snd.tone(990, .06, { gain: .08 });
   }
 };
@@ -1047,4 +1140,15 @@ document.addEventListener('pointerdown', () => {
 }, { passive: true });
 window.addEventListener('pagehide', () => { if (Voice.on) Voice.leave(true); });
 
+/* 選角色時的「🔊 試聽」 */
+const TRY_WORDS = ['碰', '槓', '自摸', '胡', '好牌！', '再來一局！'];
+let tryN = 0;
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-try]'); if (!t) return;
+  e.stopPropagation(); e.preventDefault();
+  const ci = +t.dataset.try; if (!Snd.ctx) Snd.init(); else if (Snd.ctx.state !== 'running') Snd.ctx.resume();
+  const w = TRY_WORDS[tryN++ % TRY_WORDS.length];
+  t.classList.add('on'); setTimeout(() => t.classList.remove('on'), 600);
+  Clips.load(ci).then(() => Snd.sayAs(ci, w), () => Snd.sayAs(ci, w));
+}, true);
 if (/autostart/.test(location.hash)) $('#startBtn').click();

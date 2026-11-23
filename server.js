@@ -15,7 +15,7 @@ const LOCK_MS = +process.env.LOCK_MS || 600;   // 鎖定時自動打牌的間隔
 const IDLE_CLOSE_MS = +process.env.IDLE_CLOSE_MS || 30 * 60 * 1000;   // 房間 30 分鐘沒人操作就斷線
 const ROOM_IDLE_MS = +process.env.ROOM_IDLE_MS || 10 * 60 * 1000;          // 沒人在線多久後清掉房間
 const PUB = path.join(__dirname, 'docs');
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'application/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml', '.json': 'application/json' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'application/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml', '.json': 'application/json', '.mp3': 'audio/mpeg' };
 const AI_NAMES = ['小藍', '阿明', '小美', '阿伯', '阿嬤', '王小姐', '喵喵', '小傑', '老張', '阿姨'];
 
 /* ---------- HTTP：提供前端頁面 ---------- */
@@ -28,7 +28,7 @@ const server = http.createServer((req, res) => {
   if (file.startsWith(PUB + path.sep) && MIME[path.extname(file)]) {
     return fs.readFile(file, (e, d) => {
       if (e) { res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }); return res.end('找不到頁面'); }
-      res.writeHead(200, { 'content-type': MIME[path.extname(file)], 'cache-control': 'no-cache' });
+      res.writeHead(200, { 'content-type': MIME[path.extname(file)], 'cache-control': path.extname(file) === '.mp3' ? 'public, max-age=604800' : 'no-cache' });
       res.end(d);
     });
   }
