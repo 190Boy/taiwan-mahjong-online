@@ -611,7 +611,30 @@ const MJ = (function () {
   if (typeof process !== 'undefined' && process.env && process.env.MJ_TUNE) Object.assign(LEVEL.normal, JSON.parse(process.env.MJ_TUNE));
   const LEVEL_NAMES = { easy: '簡單', normal: '普通', hard: '困難' };
 
+  /* ===== 聽牌鎖定（單機與伺服器共用） ===== */
+  // 手牌 3n+1 張且有聽 → 回傳聽的牌；否則 []
+  function lockWaits(g, seat) {
+    const p = g.players[seat]; const need = g.need(seat);
+    if (p.hand.length !== need * 3 + 1) return [];
+    return waits(countsOf(p.hand), need);
+  }
+  // 鎖定中輪到自己：回傳 {type:'discard'} 自動打摸到的牌；{type:'tsumo'}（自動胡）；
+  // null = 可以自摸，要問玩家（只給自摸、不給槓）；undefined = 鎖定已失效（應解除）
+  function lockedTurn(g, seat, opts, autoHu) {
+    const p = g.players[seat]; const jd = g.justDrew;
+    if (!jd || jd.seat !== seat) return undefined;
+    const c = countsOf(p.hand); const dt = p.hand.find(x => x.id === jd.id); if (!dt) return undefined;
+    c[dt.t]--; if (!waits(c, g.need(seat)).length) return undefined;
+    if (opts.tsumo) return autoHu ? { type: 'tsumo' } : null;
+    return { type: 'discard', id: jd.id };
+  }
+  // 鎖定中別人打牌：沒得胡 → null（直接過）；有得胡 → 只留胡的選項
+  function lockedClaim(opts) {
+    if (!opts || !opts.hu) return null;
+    return Object.assign({}, opts, { chi: [], pon: false, kong: false });
+  }
+
   return { SUITS, NUMS, WINDS, FLOWERS, RESERVE, BASE, PER, tileName, isHonor, isFlower, isTerminal, rngFrom, makeWall,
-    countsOf, isWinCounts, decompose, waits, shanten, Game, Session, SpecialWin, AI, AIS, LEVEL_NAMES, makeAI };
+    countsOf, isWinCounts, decompose, waits, shanten, lockWaits, lockedTurn, lockedClaim, Game, Session, SpecialWin, AI, AIS, LEVEL_NAMES, makeAI };
 })();
 if (typeof module !== 'undefined') module.exports = MJ;

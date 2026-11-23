@@ -131,9 +131,61 @@ const seatChar = s => (UI.online ? UI.oChars[s] : Setup.chars[s]);
 const UI = { session: new MJ.Session(), game: null, pending: null, selected: null, revealed: false, online: false, oChars: [0, 1, 2, 3], speed: 1, auto: /auto/.test(location.hash), fast: /fast/.test(location.hash) };
 const Human = {
   isHuman: true,
-  turn(g, seat, opts) { return new Promise(res => { UI.pending = { kind: 'turn', opts, res }; UI.selected = null; render(); }); },
-  claim(g, seat, tile, opts) { return new Promise(res => { UI.pending = { kind: 'claim', opts, tile, res }; Snd.alert(); render(); }); }
+  turn(g, seat, opts) {
+    if (UI.lock) {                                         // 聽牌鎖定：摸到不能胡就自動打掉
+      const r = MJ.lockedTurn(g, seat, opts, UI.lock.autoHu);
+      if (r === undefined) { UI.lock = null; }
+      else if (r) { render(); return new Promise(res => setTimeout(() => res(r), 600 * UI.speed * (UI.fast ? .05 : 1))); }
+      else opts = Object.assign({}, opts, { kongs: [] });
+    }
+    return new Promise(res => { UI.pending = { kind: 'turn', opts, res }; UI.selected = null; render(); });
+  },
+  claim(g, seat, tile, opts) {
+    if (UI.lock) {                                         // 鎖定中：吃碰槓直接過，只問胡
+      const o = MJ.lockedClaim(opts);
+      if (!o) return { type: 'pass' };
+      if (UI.lock.autoHu) return { type: 'hu' };
+      opts = o;
+    }
+    return new Promise(res => { UI.pending = { kind: 'claim', opts, tile, res }; Snd.alert(); render(); });
+  }
 };
+/* ===== 聽牌鎖定 ===== */
+UI.lock = null; UI.autoHu = (() => { try { return localStorage.getItem('mj16_autohu') === '1'; } catch (e) { return false; } })();
+function myWaits() {
+  const g = UI.game; if (!g || !g.players || g.over) return [];
+  const me = g.players[0]; const need = 5 - me.melds.length;
+  if (me.hand.length !== need * 3 + 1) return [];
+  return waits(countsOf(me.hand), need);
+}
+function setLock(on) {
+  if (UI.online) { Net.send({ t: 'lock', on: !!on, autoHu: UI.autoHu }); return; }
+  if (on && !myWaits().length) { callout('現在不能鎖定（要在聽牌、等別人出牌時）'); render(); return; }
+  UI.lock = on ? { autoHu: UI.autoHu, waits: myWaits() } : null;
+  if (on) { callout('🔒 聽牌鎖定'); const pd = UI.pending; if (pd && pd.kind === 'claim' && !pd.opts.hu) { resolvePending({ type: 'pass' }); return; } }
+  render();
+}
+function setAutoHu(v) {
+  UI.autoHu = !!v; try { localStorage.setItem('mj16_autohu', v ? '1' : '0'); } catch (e) { }
+  if (UI.lock) { if (UI.online) Net.send({ t: 'lock', on: true, autoHu: UI.autoHu }); else UI.lock.autoHu = UI.autoHu; }
+  render();
+}
+function lockHTML(B) {
+  const g = UI.game; if (!g || !g.players || g.over) return '';
+  if (UI.lock) {
+    const w = UI.lock.waits || myWaits();
+    return `<span class="lockBadge">🔒 聽牌鎖定中${w.length ? '・聽 ' + w.map(t => tileHTML(t, 'mini')).join('') : ''}</span>` +
+      `<label class="lockAuto"><input type="checkbox" id="autoHu" ${UI.autoHu ? 'checked' : ''}> 自動胡</label>` + B('unlock', '解除鎖定', 'pass');
+  }
+  const pd = UI.pending;
+  if (pd && pd.kind === 'turn') {                         // 選到打了會聽的牌 → 可「打出並鎖定」
+    const me = g.players[0]; const sel = me.hand.find(x => x.id === UI.selected);
+    if (sel) { const c = countsOf(me.hand); c[sel.t]--; if (waits(c, 5 - me.melds.length).length) return B('lockdiscard', '打出並鎖定🔒', 'lock'); }
+    return '';
+  }
+  const w = myWaits();
+  return w.length ? B('lock', `🔒 鎖定聽牌 <small>聽 ${w.map(t => tileHTML(t, 'mini')).join('')}</small>`, 'lock') : '';
+}
 function resolvePending(v) { const p = UI.pending; if (!p) return; UI.pending = null; UI.selected = null; p.res(v); render(); }
 
 const fmt = n => (n > 0 ? '+' : '') + n;
@@ -205,7 +257,7 @@ function renderActions() {
   if (pd && pd.kind === 'turn') {
     if (pd.opts.tsumo) h += B('tsumo', '自摸', 'hu');
     pd.opts.kongs.forEach((k, i) => h += B('kong:' + i, `${k.kind === 'an' ? '暗槓' : '加槓'} ${tileHTML(k.t, 'mini')}`, 'kong'));
-    h += `<span class="hint">${pd.opts.tsumo ? '可以自摸！或' : ''}點選一張牌，再點一次打出</span>`;
+    h += UI.lock ? `<span class="hint">${pd.opts.tsumo ? '摸到胡牌了！按「自摸」，或點摸到的牌打掉' : '自動打牌中…'}</span>` : `<span class="hint">${pd.opts.tsumo ? '可以自摸！或' : ''}點選一張牌，再點一次打出</span>`;
   } else if (pd && pd.kind === 'claim') {
     const o = pd.opts, t = pd.tile.t;
     if (o.hu) h += B('hu', o.rob ? '搶槓胡！' : '胡', 'hu');
@@ -214,10 +266,17 @@ function renderActions() {
     o.chi.forEach((q, i) => { const tiles = [q[0], q[1], t].sort((x, y) => x - y); h += B('chi:' + i, '吃 ' + tiles.map(x => tileHTML(x, 'mini' + (x === t ? ' last' : ''))).join(''), 'chi'); });
     h += B('pass', '過', 'pass');
   }
+  h += lockHTML(B);
   a.innerHTML = h;
+  const ah = $('#autoHu'); if (ah) ah.onchange = e => setAutoHu(e.target.checked);
 }
 $('#actions').addEventListener('click', e => {
-  const b = e.target.closest('[data-act]'); if (!b || !UI.pending) return;
+  const b0 = e.target.closest('[data-act]'); if (!b0) return;
+  if (b0.dataset.act === 'lock') return setLock(true);
+  if (b0.dataset.act === 'unlock') return setLock(false);
+  if (b0.dataset.act === 'lockdiscard') { const id = UI.selected; if (UI.pending && UI.pending.kind === 'turn' && id !== null) { const me = UI.game.players[0]; const c = countsOf(me.hand); c[me.hand.find(x => x.id === id).t]--; const w = waits(c, 5 - me.melds.length);
+    if (UI.online) { resolvePending({ type: 'discard', id }); setLock(true); } else { UI.lock = { autoHu: UI.autoHu, waits: w }; callout('🔒 聽牌鎖定'); resolvePending({ type: 'discard', id }); } } return; }
+  const b = b0; if (!UI.pending) return;
   const act = b.dataset.act, pd = UI.pending;
   if (pd.kind === 'turn') {
     if (act === 'tsumo') resolvePending({ type: 'tsumo' });
@@ -233,11 +292,13 @@ $('#actions').addEventListener('click', e => {
 $('#hand').addEventListener('click', e => {
   const el = e.target.closest('.tile'); if (!el || !UI.pending || UI.pending.kind !== 'turn') return;
   const id = +el.dataset.id;
+  if (UI.lock && !el.classList.contains('drawn')) { callout('鎖定中只能打摸到的牌'); return; }
   if (UI.selected === id) resolvePending({ type: 'discard', id });
   else { UI.selected = id; Snd.tone(1400, .04, { type: 'sine', gain: .08 }); render(); }
 });
 $('#hand').addEventListener('dblclick', e => {
   const el = e.target.closest('.tile'); if (!el || !UI.pending || UI.pending.kind !== 'turn') return;
+  if (UI.lock && !el.classList.contains('drawn')) return;
   resolvePending({ type: 'discard', id: +el.dataset.id });
 });
 
@@ -291,7 +352,7 @@ function showAgainFloating() {
 }
 async function newHand() {
   Avatars.setAll(['idle', 'idle', 'idle', 'idle']);
-  UI.revealed = false; UI.pending = null; UI.selected = null;
+  UI.revealed = false; UI.pending = null; UI.selected = null; UI.lock = null;
   const ctrls = [UI.auto ? MJ.AI : Human, MJ.AI, MJ.AI, MJ.AI];
   const g = UI.session.newGame({ aiLevel: Prefs.level, controllers: ctrls, onEvent, delay: ms => new Promise(r => setTimeout(r, ms * UI.speed * (UI.fast ? .05 : 1))) });
   UI.game = g; window.__game = g;
@@ -602,7 +663,7 @@ function onNet(m) {
     case 'state': {
       UI.online = true; ov('#lobbyOv', false); ov('#roomOv', false);
       const v = mkView(m.view); UI.game = v; UI.session = v.session;
-      if (m.ev === 'start') { Avatars.setAll(['idle', 'idle', 'idle', 'idle']); UI.revealed = false; UI.pending = null; UI.selected = null; ov('#resultOv', false); }
+      if (m.ev === 'start') { Avatars.setAll(['idle', 'idle', 'idle', 'idle']); UI.revealed = false; UI.pending = null; UI.selected = null; UI.lock = null; ov('#resultOv', false); }
       if (m.ev === 'sync') { UI.revealed = !!v.over; Avatars.setAll(v.over ? exprFromResult(v.result) : ['idle', 'idle', 'idle', 'idle']); if (!v.over) ov('#resultOv', false); render(); }
       else onEvent(m.ev, m.data);
       break;
@@ -625,6 +686,7 @@ function onNet(m) {
     case 'kicked': Net.close(); UI.online = false; ov('#lobbyOv', true); Lobby.render(); lbMsg(m.msg); break;
     case 'left': break;
     case 'chat': Chat.show(m.seat, m.i); break;
+    case 'lock': { const was = !!UI.lock; UI.lock = m.on ? { autoHu: !!m.autoHu, waits: m.waits || null } : null; if (m.on && !was) callout('🔒 聽牌鎖定'); if (!m.on && m.why) callout(m.why); render(); break; }
     case 'idle': Net.close(); UI.sleeping = true; showConn('閒置太久，已暫時斷線', '點一下畫面任何地方就會重新連線'); break;
   }
 }

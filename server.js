@@ -11,6 +11,7 @@ const PORT = +process.env.PORT || 3000;
 const TURN_MS = +process.env.TURN_MS || 20000;     // 出牌時限
 const CLAIM_MS = +process.env.CLAIM_MS || 9000;    // 吃碰槓胡時限
 const DELAY_SCALE = process.env.DELAY_SCALE ? +process.env.DELAY_SCALE : 1; // 動作間隔倍率（測試用）
+const LOCK_MS = +process.env.LOCK_MS || 600;   // 鎖定時自動打牌的間隔
 const IDLE_CLOSE_MS = +process.env.IDLE_CLOSE_MS || 30 * 60 * 1000;   // 房間 30 分鐘沒人操作就斷線
 const ROOM_IDLE_MS = +process.env.ROOM_IDLE_MS || 10 * 60 * 1000;          // 沒人在線多久後清掉房間
 const PUB = path.join(__dirname, 'docs');
@@ -150,27 +151,61 @@ function makeCtrl(room, s) {
     get isHuman() { return online(room, s); },
     turn(g, seat, opts) {
       if (room.dead) throw new Error('room closed');
+      const p = room.seats[s];
+      if (p && p.lock) {                       // 聽牌鎖定：伺服器自己打摸到的牌（不靠玩家分頁）
+        const r = MJ.lockedTurn(g, seat, opts, p.lock.autoHu);
+        if (r === undefined) setLock(room, s, false, '聽牌已改變，已解除鎖定');
+        else if (r) return sleep(room, LOCK_MS).then(() => r);
+        else if (online(room, s)) return ask(room, s, 'turn', { opts: Object.assign({}, opts, { kongs: [] }) }, TURN_MS, () => ({ type: 'tsumo' }));
+      }
       if (!online(room, s)) return MJ.AI.turn(g, seat, opts);
       return ask(room, s, 'turn', { opts }, TURN_MS, () => MJ.AI.turn(g, seat, opts));
     },
     claim(g, seat, tile, opts) {
       if (room.dead) throw new Error('room closed');
+      const p = room.seats[s];
+      if (p && p.lock) {
+        if (!MJ.lockWaits(g, seat).length) setLock(room, s, false, '聽牌已改變，已解除鎖定');
+        else {
+          const o = MJ.lockedClaim(opts);
+          if (!o) return { type: 'pass' };
+          if (p.lock.autoHu || !online(room, s)) return { type: 'hu' };
+          return ask(room, s, 'claim', { opts: o, tile }, CLAIM_MS, () => ({ type: 'hu' }));
+        }
+      }
       if (!online(room, s)) return MJ.AI.claim(g, seat, tile, opts);
       return ask(room, s, 'claim', { opts, tile }, CLAIM_MS, () => ({ type: 'pass' }));
     }
   };
+}
+function setLock(room, s, on, why, autoHu, retry) {
+  const p = room.seats[s]; if (!p) return;
+  const g = room.game;
+  if (on && p.lock) p.lock.autoHu = !!autoHu;
+  else if (on) {
+    const w = g && g.players && !g.over ? MJ.lockWaits(g, s) : [];
+    if (!w.length) {
+      if (retry) return setImmediate(() => setLock(room, s, on, why, autoHu, false));   // 「打出並鎖定」：等這張牌打出去再判斷
+      send(p.ws, { t: 'lock', on: false, why: '現在沒有聽牌，不能鎖定' }); return;
+    }
+    p.lock = { autoHu: !!autoHu, waits: w };
+  } else p.lock = null;
+  send(p.ws, { t: 'lock', on: !!p.lock, autoHu: p.lock ? p.lock.autoHu : false, waits: p.lock ? p.lock.waits : null, why: why || '' });
+  if (p.lock && p.pending && p.pending.kind === 'claim' && !p.pending.payload.opts.hu) p.pending.done({ type: 'pass' });
 }
 const sleep = (room, ms) => new Promise((res, rej) => setTimeout(() => room.dead ? rej(new Error('room closed')) : res(), ms * DELAY_SCALE));
 
 function startHand(room) {
   if (room.phase === 'playing' || room.dead) return;
   fillAI(room);
+  for (const p of room.seats) if (p) p.lock = null;
   room.phase = 'playing'; room.ready.clear();
   const g = room.session.newGame({ aiLevel: room.level, controllers: [0, 1, 2, 3].map(s => makeCtrl(room, s)),
     onEvent: (ev, d) => onGameEvent(room, ev, d), delay: ms => sleep(room, ms) });
   room.game = g;
   broadcastRoom(room);
   g.play().then(r => {
+    for (const p of room.seats) if (p) p.lock = null;
     room.session.apply(r);
     for (let s = 0; s < 4; s++) {
       const st = room.stats[s]; st.hands++; st.pts += r.payments[s];
@@ -213,6 +248,7 @@ function attach(ws, room, s, isNew) {
   broadcastRoom(room);
   if (room.game && room.game.players) send(ws, { t: 'state', ev: 'sync', data: {}, view: viewFor(room, s) });
   if (room.phase === 'result' && room.game && room.game.result) send(ws, { t: 'result', result: relResult(room.game.result, s), session: sessionFor(room.session, s), view: viewFor(room, s) });
+  if (p.lock) send(ws, { t: 'lock', on: true, autoHu: p.lock.autoHu, waits: p.lock.waits });
   if (p.pending) sendPrompt(p);
 }
 function detach(ws) {
@@ -254,6 +290,7 @@ function handle(ws, m) {
     case 'start': if (p.host && room.phase === 'lobby') startHand(room); break;
     case 'act': if (p.pending && p.pending.pid === m.pid) p.pending.done(m.d || {}); break;
     case 'again': room.ready.add(seat); if (p.host && m.force) startHand(room); else maybeAgain(room); break;
+    case 'lock': if (room.phase === 'playing') setLock(room, seat, !!m.on, '', !!m.autoHu, true); break;
     case 'level': if (p.host && room.phase === 'lobby' && MJ.LEVEL_NAMES[m.v]) { room.level = m.v; broadcastRoom(room); } break;
     case 'chat': {
       const i = +m.i; if (!Number.isInteger(i) || i < 0 || i >= CHAT_N) break;
