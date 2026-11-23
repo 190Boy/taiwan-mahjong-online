@@ -82,39 +82,56 @@ const MJ = (function () {
     return w;
   }
 
-  /* --- 向聽數（AI 用） --- */
-  const SH = new Map();
-  function shanten(c, need) {
-    const key = String.fromCharCode.apply(null, c) + need;
-    const hit = SH.get(key); if (hit !== undefined) return hit;
-    let best = 2 * need + 1;
-    const dfs = (i, sets, part, pair) => {
-      if (best <= -1) return;
-      while (i < 34 && !c[i]) i++;
-      if (i >= 34) {
-        const p = Math.min(part, need - sets);
-        const s = 2 * (need - sets) - p - pair;
-        if (s < best) best = s; return;
+  /* --- 向聽數（AI 用） ---
+     把手牌拆成 萬／筒／條／字 四組，各組先列出所有 (面子數, 搭子數, 有沒有眼) 的組合（同一組牌型只算一次，記起來），
+     再合併四組。結果和逐張窮舉一樣，但快上百倍，AI 不會卡住伺服器。 */
+  const GRP = new Map();
+  function groupTuples(c, off, len, honor) {
+    let key = honor ? 'h' : 's'; for (let i = 0; i < len; i++) key += c[off + i];
+    let hit = GRP.get(key); if (hit) return hit;
+    const a = []; for (let i = 0; i < len; i++) a.push(c[off + i]);
+    const seen = new Set(); const out = [];
+    const rec = (i, m, d, p) => {
+      while (i < len && !a[i]) i++;
+      if (i >= len) { const k = (m * 16 + d) * 2 + p; if (!seen.has(k)) { seen.add(k); out.push([m, d, p]); } return; }
+      if (a[i] >= 3) { a[i] -= 3; rec(i, m + 1, d, p); a[i] += 3; }
+      if (!honor && i <= 6 && a[i + 1] && a[i + 2]) { a[i]--; a[i + 1]--; a[i + 2]--; rec(i, m + 1, d, p); a[i]++; a[i + 1]++; a[i + 2]++; }
+      if (a[i] >= 2) { a[i] -= 2; if (!p) rec(i, m, d, 1); rec(i, m, d + 1, p); a[i] += 2; }
+      if (!honor) {
+        if (i <= 7 && a[i + 1]) { a[i]--; a[i + 1]--; rec(i, m, d + 1, p); a[i]++; a[i + 1]++; }
+        if (i <= 6 && a[i + 2]) { a[i]--; a[i + 2]--; rec(i, m, d + 1, p); a[i]++; a[i + 2]++; }
       }
-      if (sets < need && c[i] >= 3) { c[i] -= 3; dfs(i, sets + 1, part, pair); c[i] += 3; }
-      if (sets < need && i < 27 && i % 9 <= 6 && c[i + 1] && c[i + 2]) {
-        c[i]--; c[i + 1]--; c[i + 2]--; dfs(i, sets + 1, part, pair); c[i]++; c[i + 1]++; c[i + 2]++;
-      }
-      if (c[i] >= 2) {
-        c[i] -= 2;
-        if (!pair) dfs(i, sets, part, 1);
-        if (sets + part < need) dfs(i, sets, part + 1, pair);
-        c[i] += 2;
-      }
-      if (sets + part < need && i < 27) {
-        if (i % 9 <= 7 && c[i + 1]) { c[i]--; c[i + 1]--; dfs(i, sets, part + 1, pair); c[i]++; c[i + 1]++; }
-        if (i % 9 <= 6 && c[i + 2]) { c[i]--; c[i + 2]--; dfs(i, sets, part + 1, pair); c[i]++; c[i + 2]++; }
-      }
-      c[i]--; dfs(i, sets, part, pair); c[i]++;
+      a[i]--; rec(i, m, d, p); a[i]++;
     };
-    dfs(0, 0, 0, 0);
-    if (SH.size > 300000) SH.clear();
-    SH.set(key, best);
+    rec(0, 0, 0, 0);
+    // 去掉被支配的組合（面子、搭子、眼都不比別人多）
+    hit = out.filter(x => !out.some(y => y !== x && y[0] >= x[0] && y[0] + y[1] >= x[0] + x[1] && y[1] >= x[1] && y[2] === x[2] && (y[0] > x[0] || y[1] > x[1])));
+    if (GRP.size > 50000) GRP.clear();
+    GRP.set(key, hit);
+    return hit;
+  }
+  function shanten(c, need) {
+    const gs = [groupTuples(c, 0, 9, false), groupTuples(c, 9, 9, false), groupTuples(c, 18, 9, false), groupTuples(c, 27, 7, true)];
+    // 逐組合併：狀態 (面子, 搭子, 眼)，面子／搭子最多算到 need
+    let st = new Set([0]);
+    for (const g of gs) {
+      const nx = new Set();
+      for (const k of st) {
+        const m0 = k >> 5, d0 = (k >> 1) & 15, p0 = k & 1;
+        for (const [m, d, p] of g) {
+          if (p0 && p) continue;
+          const M = Math.min(need, m0 + m), D = Math.min(need, d0 + d);
+          nx.add((M << 5) | (D << 1) | (p0 | p));
+        }
+      }
+      st = nx;
+    }
+    let best = 2 * need + 1;
+    for (const k of st) {
+      const M = k >> 5, D = (k >> 1) & 15, P = k & 1;
+      const s = 2 * (need - M) - Math.min(D, need - M) - P;
+      if (s < best) best = s;
+    }
     return best;
   }
   function bestDiscardShanten(c, need) {
@@ -131,6 +148,18 @@ const MJ = (function () {
     return [...set];
   }
 
+  /* 吃碰槓胡的回覆一律對照「可用選項」重新整理：不合法就當作「過」；吃牌只取選項裡那兩張（避免傳 5 張吃出 6 張的組） */
+  function checkClaim(d, o) {
+    if (!d || typeof d !== 'object' || !o) return { type: 'pass' };
+    if (d.type === 'hu' && o.hu) return { type: 'hu' };
+    if (d.type === 'pon' && o.pon) return { type: 'pon' };
+    if (d.type === 'kong' && o.kong) return { type: 'kong' };
+    if (d.type === 'chi' && Array.isArray(d.seq) && d.seq.length === 2 && Array.isArray(o.chi)) {
+      const q = o.chi.find(q => q[0] === d.seq[0] && q[1] === d.seq[1]);
+      if (q) return { type: 'chi', seq: [q[0], q[1]] };
+    }
+    return { type: 'pass' };
+  }
   /* ================= 遊戲 ================= */
   class SpecialWin { constructor(result) { this.result = result; } }
   class Game {
@@ -318,7 +347,7 @@ const MJ = (function () {
       const dec = {}; const humans = [];
       for (const s of order) {
         if (this.ctrls[s].isHuman) humans.push(s);
-        else dec[s] = (await this.ctrls[s].claim(this, s, tile, opts[s])) || { type: 'pass' };
+        else dec[s] = checkClaim(await this.ctrls[s].claim(this, s, tile, opts[s]), opts[s]);
       }
       if (humans.length) {
         const aiHu = order.filter(s => dec[s] && dec[s].type === 'hu');
@@ -336,10 +365,7 @@ const MJ = (function () {
           if (!ask) continue;
           this.emit('prompt', { seat: human, tile, opts: ho });
           asks.push(Promise.resolve(this.ctrls[human].claim(this, human, tile, ho)).then(d => {
-            d = d || { type: 'pass' };
-            if ((d.type === 'hu' && !ho.hu) || (d.type === 'pon' && !ho.pon) || (d.type === 'kong' && !ho.kong) ||
-              (d.type === 'chi' && !ho.chi.some(q => d.seq && q[0] === d.seq[0] && q[1] === d.seq[1]))) d = { type: 'pass' };
-            dec[human] = d;
+            dec[human] = checkClaim(d, ho);
           }));
         }
         await Promise.all(asks);
@@ -362,7 +388,7 @@ const MJ = (function () {
         }
       }
       const cs = (from + 1) % 4; const d = dec[cs];
-      if (d && d.type === 'chi' && opts[cs] && opts[cs].chi.some(q => q[0] === d.seq[0] && q[1] === d.seq[1])) {
+      if (d && d.type === 'chi' && opts[cs] && d.seq && opts[cs].chi.some(q => q[0] === d.seq[0] && q[1] === d.seq[1])) {
         const p = this.players[cs]; const take = [];
         for (const t of d.seq) { const i = p.hand.findIndex(x => x.t === t); take.push(p.hand.splice(i, 1)[0]); }
         this.players[from].discards.pop();
@@ -520,11 +546,14 @@ const MJ = (function () {
     else if (honorsOnly) d *= 0.6;
     return d;
   }
+  // 2026-11 用 test/ai-eval.js 調整（每組 4000 局配對比較）：原本的防守（slack 1）讓普通比舊版 v1 弱；
+  // 改成「只在同向聽數裡挑比較安全的牌」（slack 0）後不再吃虧；困難再加上積極吃碰（ponLoose），明顯比普通強。
   const LEVEL = {
     easy: { uke: false, defense: 0, mistake: 0.18, ponLoose: true },
-    normal: { uke: true, defense: 1, w: [10, 40, 110], thMin: 0.5, slack: 1, mistake: 0, ponLoose: false },
-    hard: { uke: true, defense: 1.4, w: [10, 40, 110], thMin: 0.5, slack: 1, mistake: 0, ponLoose: false },
-    v1: { uke: true, defense: 0, mistake: 0, ponLoose: false }            // 舊版（比較用）
+    normal: { uke: true, defense: 1, w: [10, 40, 110], thMin: 0.5, slack: 0, mistake: 0, ponLoose: false },
+    hard: { uke: true, defense: 1, w: [10, 40, 110], thMin: 0.5, slack: 0, mistake: 0, ponLoose: true },
+    v1: { uke: true, defense: 0, mistake: 0, ponLoose: false },           // 舊版（比較用）
+    def1: { uke: true, defense: 1, w: [10, 40, 110], thMin: 0.5, slack: 1, mistake: 0, ponLoose: false }   // 上一版普通（比較用）
   };
   function makeAI(fixed) {
     const lv = g => LEVEL[fixed || g.aiLevel] || LEVEL.normal;
@@ -607,7 +636,7 @@ const MJ = (function () {
     return ai;
   }
   const AI = makeAI(null);                       // 依 game.aiLevel（預設 普通）
-  const AIS = { easy: makeAI('easy'), normal: makeAI('normal'), hard: makeAI('hard'), v1: makeAI('v1') };
+  const AIS = { easy: makeAI('easy'), normal: makeAI('normal'), hard: makeAI('hard'), v1: makeAI('v1'), def1: makeAI('def1') };
   if (typeof process !== 'undefined' && process.env && process.env.MJ_TUNE) Object.assign(LEVEL.normal, JSON.parse(process.env.MJ_TUNE));
   const LEVEL_NAMES = { easy: '簡單', normal: '普通', hard: '困難' };
 
@@ -635,6 +664,6 @@ const MJ = (function () {
   }
 
   return { SUITS, NUMS, WINDS, FLOWERS, RESERVE, BASE, PER, tileName, isHonor, isFlower, isTerminal, rngFrom, makeWall,
-    countsOf, isWinCounts, decompose, waits, shanten, lockWaits, lockedTurn, lockedClaim, Game, Session, SpecialWin, AI, AIS, LEVEL_NAMES, makeAI };
+    countsOf, isWinCounts, decompose, waits, shanten, checkClaim, lockWaits, lockedTurn, lockedClaim, Game, Session, SpecialWin, AI, AIS, LEVEL_NAMES, makeAI };
 })();
 if (typeof module !== 'undefined') module.exports = MJ;

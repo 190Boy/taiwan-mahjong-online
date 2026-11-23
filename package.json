@@ -5,7 +5,10 @@
   "main": "server.js",
   "private": true,
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node test/rules.test.js && node test/server.test.js",
+    "bench": "node test/ai-bench.js 100",
+    "ai-eval": "node test/ai-eval.js 1000 4"
   },
   "engines": {
     "node": ">=18"

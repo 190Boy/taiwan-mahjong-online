@@ -42,14 +42,34 @@ const rel = (s, me) => (s - me + 4) % 4;
 const abs = (r, me) => (r + me) % 4;
 const rot = (arr, me) => [0, 1, 2, 3].map(r => arr[abs(r, me)]);
 const token = () => crypto.randomBytes(12).toString('hex');
-function newCode() { let c; do { c = String(1000 + Math.floor(Math.random() * 9000)); } while (rooms.has(c)); return c; }
+function newCode() { let c; do { c = String(1000 + crypto.randomInt(9000)); } while (rooms.has(c)); return c; }   // 房間數有上限（MAX_ROOMS），不會無限迴圈
 const online = (room, s) => !!(room.seats[s] && room.seats[s].ws);
 const send = (ws, msg) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg)); };
 
 const blankStat = () => ({ hands: 0, wins: 0, tsumo: 0, dealins: 0, tai: 0, pts: 0 });
 const CHAT_N = 16;
 let voiceSeq = 0;
-const RTC_MAX = 300, RTC_WIN = 20000;   // 語音信令：每個座位 20 秒最多 300 則（ICE 候選會比較多）
+const RTC_MAX = 300, RTC_WIN = 20000;
+/* ---------- 防濫用：加入房間次數限制（防止猜 4 位數房號）、開房次數、訊息頻率 ---------- */
+const LIM = {
+  joinConn: [8, 60 * 1000],          // 每條連線每分鐘最多試 8 次加入
+  joinIp: [30, 10 * 60 * 1000],      // 每個 IP 10 分鐘最多 30 次加入
+  failIp: [12, 10 * 60 * 1000],      // 每個 IP 10 分鐘最多 12 次「找不到房號」
+  createIp: [12, 10 * 60 * 1000],    // 每個 IP 10 分鐘最多開 12 間房
+  msgConn: [400, 10 * 1000],         // 每條連線 10 秒最多 400 則訊息（超過就斷線）
+  bcastConn: [40, 10 * 1000]         // 會廣播給全房的動作（語音狀態、改名、準備…）10 秒最多 40 次
+};
+Object.keys(LIM).forEach(k => { const e = process.env['LIM_' + k.toUpperCase()]; if (e) LIM[k] = [+e, LIM[k][1]]; });   // 測試用
+const MAX_ROOMS = +process.env.MAX_ROOMS || 2000;
+const LOBBY_RECLAIM_MS = +process.env.LOBBY_RECLAIM_MS || 60 * 1000;   // 大廳裡離線超過 1 分鐘的座位，房間滿時可讓新玩家遞補（給新 token，不沿用舊的）
+const ipLogs = new Map();            // ip → { join:[], fail:[], create:[] }
+function over(log, [max, win], now) { while (log.length && now - log[0] > win) log.shift(); if (log.length >= max) return true; log.push(now); return false; }
+function ipLog(ip) { let l = ipLogs.get(ip); if (!l) ipLogs.set(ip, l = { join: [], fail: [], create: [], t: 0 }); l.t = Date.now(); return l; }
+function clientIp(req) {
+  const h = req.headers || {};
+  const v = h['cf-connecting-ip'] || h['true-client-ip'] || String(h['x-forwarded-for'] || '').split(',')[0].trim() || (req.socket && req.socket.remoteAddress) || '?';
+  return String(v).slice(0, 64);
+}   // 語音信令：每個座位 20 秒最多 300 則（ICE 候選會比較多）
 function createRoom() {
   const code = newCode();
   const room = { code, seats: [null, null, null, null], session: new MJ.Session(), game: null, phase: 'lobby',
@@ -161,7 +181,7 @@ function makeCtrl(room, s) {
         else if (r) return sleep(room, LOCK_MS).then(() => r);
         else if (online(room, s)) return ask(room, s, 'turn', { opts: Object.assign({}, opts, { kongs: [] }) }, TURN_MS, () => ({ type: 'tsumo' }));
       }
-      if (!online(room, s)) return MJ.AI.turn(g, seat, opts);
+      if (!online(room, s)) return aiThink(room, () => MJ.AI.turn(g, seat, opts));
       return ask(room, s, 'turn', { opts }, TURN_MS, () => MJ.AI.turn(g, seat, opts));
     },
     claim(g, seat, tile, opts) {
@@ -176,11 +196,13 @@ function makeCtrl(room, s) {
           return ask(room, s, 'claim', { opts: o, tile }, CLAIM_MS, () => ({ type: 'hu' }));
         }
       }
-      if (!online(room, s)) return MJ.AI.claim(g, seat, tile, opts);
+      if (!online(room, s)) return aiThink(room, () => MJ.AI.claim(g, seat, tile, opts));
       return ask(room, s, 'claim', { opts, tile }, CLAIM_MS, () => ({ type: 'pass' }));
     }
   };
 }
+// 電腦思考前先讓出事件迴圈（setImmediate），別的房間的訊息可以先處理
+const aiThink = (room, fn) => new Promise((res, rej) => setImmediate(() => { if (room.dead) return rej(new Error('room closed')); try { res(fn()); } catch (e) { rej(e); } }));
 function setLock(room, s, on, why, autoHu, retry) {
   const p = room.seats[s]; if (!p) return;
   const g = room.game;
@@ -232,15 +254,30 @@ function maybeAgain(room) {
 
 /* ---------- WebSocket ---------- */
 const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 24 * 1024 });
-wss.on('connection', ws => {
+wss.on('connection', (ws, req) => {
   ws.isAlive = true; ws.on('pong', () => { ws.isAlive = true; });
   ws.ctx = null; // { room, seat }
+  ws.ip = clientIp(req); ws.lim = { join: [], msg: [], bcast: [] };
   ws.on('message', raw => {
+    if (over(ws.lim.msg, LIM.msgConn, Date.now())) { try { ws.close(1008, 'too many messages'); } catch (e) { } return; }
     let m; try { m = JSON.parse(raw); } catch (e) { return; }
+    if (!m || typeof m !== 'object' || Array.isArray(m) || typeof m.t !== 'string') return;
     try { handle(ws, m); } catch (e) { console.error('handle error', e); send(ws, { t: 'err', msg: '伺服器錯誤' }); }
   });
   ws.on('close', () => detach(ws));
 });
+const BCAST = new Set(['start', 'again', 'lock', 'vjoin', 'vleave', 'vmute', 'level', 'profile']);
+// 玩家回覆只留下需要的欄位、型別正確（牌局邏輯還會再對照可用選項驗證一次）
+function cleanAct(d) {
+  if (!d || typeof d !== 'object' || Array.isArray(d)) return {};
+  const o = {}; const int = v => Number.isInteger(v) ? v : undefined;
+  if (['discard', 'tsumo', 'kong', 'hu', 'pon', 'chi', 'pass'].includes(d.type)) o.type = d.type;
+  if (int(d.id) !== undefined) o.id = d.id;
+  if (d.kind === 'an' || d.kind === 'add') o.kind = d.kind;
+  if (int(d.t) !== undefined) o.t = d.t;
+  if (Array.isArray(d.seq) && d.seq.length === 2 && d.seq.every(v => Number.isInteger(v) && v >= 0 && v < 27)) o.seq = [d.seq[0], d.seq[1]];
+  return o;
+}
 function cleanName(n) { return String(n || '').replace(/[<>&"]/g, '').trim().slice(0, 8) || '玩家'; }
 function cleanCi(ci) { ci = +ci; return Number.isInteger(ci) && ci >= 0 && ci < AI_NAMES.length ? ci : 0; }
 function attach(ws, room, s, isNew) {
@@ -258,7 +295,7 @@ function detach(ws) {
   const c = ws.ctx; if (!c) return; ws.ctx = null;
   const { room, seat } = c; const p = room.seats[seat];
   if (!p || p.ws !== ws) return;
-  p.ws = null; p.voice = null; room.lastActive = Date.now(); room.ready.delete(seat);
+  p.ws = null; p.voice = null; p.offAt = Date.now(); room.lastActive = Date.now(); room.ready.delete(seat);
   if (p.pending) { const pd = p.pending; pd.done(pd.kind === 'turn' ? pd.fallback() : MJ.AI.claim(room.game, seat, pd.payload.tile, pd.payload.opts)); }
   broadcastRoom(room); maybeAgain(room);
 }
@@ -267,31 +304,42 @@ function handle(ws, m) {
   switch (m.t) {
     case 'ping': return send(ws, { t: 'pong' });
     case 'create': {
+      const now = Date.now();
+      if (over(ipLog(ws.ip).create, LIM.createIp, now)) return send(ws, { t: 'err', code: 'slow', msg: '開房太頻繁了，請稍後再試' });
+      if (rooms.size >= MAX_ROOMS) return send(ws, { t: 'err', code: 'busy', msg: '伺服器房間已滿，請稍後再試' });
       if (c) detachSeat(ws);
       const room = createRoom();
       room.seats[0] = { name: cleanName(m.name), ci: cleanCi(m.ci), token: token(), ws: null, host: true, pending: null };
       return attach(ws, room, 0, true);
     }
     case 'join': {
-      const room = rooms.get(String(m.code || '').trim());
-      if (!room) return send(ws, { t: 'err', code: 'noroom', msg: '找不到這個房號（可能已過期）' });
-      let s = m.token ? room.seats.findIndex(p => p && p.token === m.token) : -1;
-      if (s < 0) s = room.seats.findIndex(p => p && !p.ws && p.name === cleanName(m.name));
+      const now = Date.now(), il = ipLog(ws.ip);
+      const slow = () => send(ws, { t: 'err', code: 'slow', msg: '嘗試加入太多次了，請稍後再試' });
+      if (over(ws.lim.join, LIM.joinConn, now) || il.fail.filter(t => now - t < LIM.failIp[1]).length >= LIM.failIp[0]) return slow();
+      const room = rooms.get(String(m.code || '').trim().slice(0, 8));
+      if (!room) { over(il.fail, LIM.failIp, now); return send(ws, { t: 'err', code: 'noroom', msg: '找不到這個房號（可能已過期）' }); }
+      // 斷線重連只認 token（不再用名字比對，避免別人用名字搶座位、看手牌、拿到 token）
+      const tok = typeof m.token === 'string' && /^[0-9a-f]{24}$/.test(m.token) ? m.token : null;
+      let s = tok ? room.seats.findIndex(p => p && p.token === tok) : -1;
+      if (c && !(c.room === room && c.seat === s)) detachSeat(ws);   // 這條連線原本在別的房間／座位 → 先放開，那邊改由電腦代打
       if (s >= 0) { if (m.ci !== undefined && room.phase === 'lobby') room.seats[s].ci = cleanCi(m.ci); return attach(ws, room, s, false); }
+      if (over(il.join, LIM.joinIp, now)) return slow();          // 新座位才算（同一個 Wi-Fi 好幾人斷線重連不受影響）
       s = room.seats.findIndex(p => !p);
-      if (s < 0) return send(ws, { t: 'err', code: 'full', msg: '房間已滿（4 人）' });
-      const hasHost = room.seats.some(p => p && p.host);
+      if (s < 0 && room.phase === 'lobby') s = room.seats.findIndex(p => p && !p.ws && p.offAt && now - p.offAt > LOBBY_RECLAIM_MS);   // 大廳：遞補離線很久的座位（新 token）
+      if (s < 0) return send(ws, { t: 'err', code: 'full', msg: room.phase === 'lobby' ? '房間已滿（4 人）' : '房間已滿或牌局進行中' });
+      const hasHost = room.seats.some((p, i) => p && p.host && i !== s);
       room.seats[s] = { name: cleanName(m.name), ci: cleanCi(m.ci), token: token(), ws: null, host: !hasHost, pending: null };
-      room.stats[s] = blankStat();
+      room.stats[s] = blankStat(); room.ready.delete(s);
       if (room.ai[s] && room.ai[s].ci === room.seats[s].ci) room.ai[s] = null;
       return attach(ws, room, s, true);
     }
   }
   if (!c) return send(ws, { t: 'err', msg: '尚未加入房間' });
-  const { room, seat } = c; const p = room.seats[seat]; room.lastActive = Date.now(); if (m.t !== 'ping') room.lastMsg = Date.now();
+  const { room, seat } = c; const p = room.seats[seat]; if (!p) return; room.lastActive = Date.now(); if (m.t !== 'ping') room.lastMsg = Date.now();
+  if (BCAST.has(m.t) && over(ws.lim.bcast, LIM.bcastConn, Date.now())) return send(ws, { t: 'err', code: 'slow', msg: '操作太頻繁了，休息一下～' });
   switch (m.t) {
     case 'start': if (p.host && room.phase === 'lobby') startHand(room); break;
-    case 'act': if (p.pending && p.pending.pid === m.pid) p.pending.done(m.d || {}); break;
+    case 'act': if (p.pending && p.pending.pid === m.pid) p.pending.done(cleanAct(m.d)); break;
     case 'again': room.ready.add(seat); if (p.host && m.force) startHand(room); else maybeAgain(room); break;
     case 'lock': if (room.phase === 'playing') setLock(room, seat, !!m.on, '', !!m.autoHu, true); break;
     case 'vjoin': p.voice = { id: crypto.randomBytes(4).toString('hex'), n: ++voiceSeq, muted: !!m.muted }; broadcastRoom(room); break;
@@ -337,6 +385,7 @@ function detachSeat(ws, leaving) {
 setInterval(() => {
   wss.clients.forEach(ws => { if (!ws.isAlive) return ws.terminate(); ws.isAlive = false; try { ws.ping(); } catch (e) { } });
   const now = Date.now();
+  for (const [ip, l] of ipLogs) if (now - l.t > 15 * 60 * 1000) ipLogs.delete(ip);
   for (const [code, room] of rooms) {
     if (room.seats.some(p => p && p.ws)) {
       const talking = room.seats.filter(p => p && p.ws && p.voice).length >= 2;   // 正在語音聊天的房間不算閒置

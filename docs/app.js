@@ -638,7 +638,9 @@ const Net = {
     ws.onopen = () => {
       clearTimeout(this.slowT); this.tries = 0; hideConn();
       const s = Profile.sess();
-      if (s && s.code && s.token) ws.send(JSON.stringify({ t: 'join', code: s.code, token: s.token, name: Profile.name, ci: Profile.ci }));
+      // 使用者剛按了「開房／加入」→ 只送那個動作，不先自動回到舊房間（否則舊座位會一直被當成在線）
+      const explicit = this.queue.some(m => m.t === 'create' || m.t === 'join');
+      if (!explicit && s && s.code && s.token) ws.send(JSON.stringify({ t: 'join', code: s.code, token: s.token, name: Profile.name, ci: Profile.ci }));
       this.queue.splice(0).forEach(m => ws.send(JSON.stringify(m)));
     };
     ws.onmessage = e => { let m; try { m = JSON.parse(e.data); } catch (x) { return; } onNet(m); };
@@ -681,6 +683,7 @@ const Lobby = {
       if (!this.profileOk()) return; const code = ($('#lbCode').value || '').replace(/\D/g, '');
       if (code.length !== 4) { lbMsg('請輸入 4 位數房號'); return; }
       Snd.ctx || Snd.init(); const s = Profile.sess();
+      if (s && s.code !== code) Profile.setSess(null);          // 換到別的房間：舊房間的座位就放掉（伺服器也會改由電腦代打）
       lbMsg('加入房間中…');
       Net.send({ t: 'join', code, name: Profile.name, ci: Profile.ci, token: s && s.code === code ? s.token : undefined });
     };
@@ -777,7 +780,7 @@ function onNet(m) {
       break;
     }
     case 'err':
-      if (m.code === 'noroom') { Profile.setSess(null); UI.online = false; ov('#roomOv', false); ov('#lobbyOv', true); Lobby.render(); }
+      if (m.code === 'noroom' || (m.code === 'full' && !UI.room)) { Profile.setSess(null); UI.online = false; ov('#roomOv', false); ov('#lobbyOv', true); Lobby.render(); }
       lbMsg(m.msg || '發生錯誤'); if (!$('#lobbyOv').classList.contains('hidden')) { } else callout(m.msg || '錯誤');
       break;
     case 'kicked': Voice.leave(true); Net.close(); UI.online = false; ov('#lobbyOv', true); Lobby.render(); lbMsg(m.msg); break;

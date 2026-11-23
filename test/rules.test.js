@@ -104,10 +104,58 @@ function game(ctrls) {
     const lc = MJ.lockedClaim({ hu: true, pon: true, kong: false, chi: [[1, 2]], rob: true });
     ok(lc && lc.hu && !lc.pon && !lc.chi.length && lc.rob, '鎖定：可以胡（含搶槓）→ 只問胡');
   }
+  // 10. 吃牌回覆驗證：seq 一定要剛好 2 張、而且是選項裡的那兩張（不能吃出 6 張的組）
+  {
+    const o = { hu: false, pon: false, kong: false, chi: [[1, 2]] };
+    ok(MJ.checkClaim({ type: 'chi', seq: [1, 2, 20, 21, 22] }, o).type === 'pass', '吃牌：seq 帶 5 張 → 當作過');
+    ok(MJ.checkClaim({ type: 'chi', seq: [1] }, o).type === 'pass' && MJ.checkClaim({ type: 'chi', seq: '12' }, o).type === 'pass' && MJ.checkClaim({ type: 'chi' }, o).type === 'pass', '吃牌：seq 太短／不是陣列／沒有 → 當作過');
+    ok(MJ.checkClaim({ type: 'chi', seq: [2, 3] }, o).type === 'pass', '吃牌：不在選項裡的組合 → 當作過');
+    const v = MJ.checkClaim({ type: 'chi', seq: [1, 2], extra: 1 }, o); ok(v.type === 'chi' && v.seq.length === 2 && v.seq[0] === 1 && v.seq !== o.chi[0], '吃牌：合法 → 只留選項裡的兩張');
+    ok(MJ.checkClaim({ type: 'pon' }, o).type === 'pass' && MJ.checkClaim({ type: 'hu' }, o).type === 'pass' && MJ.checkClaim(null, o).type === 'pass' && MJ.checkClaim('x', o).type === 'pass', '沒有的選項（碰／胡）或亂傳 → 當作過');
+    // 整個 claims 流程：真人下家傳 5 張的 seq
+    for (const seq of [[1, 2, 19, 20, 21], [1, 2]]) {
+      const human = { isHuman: true, turn: MJ.AI.turn, claim: () => ({ type: 'chi', seq }) };
+      const g = game([MJ.AI, human, MJ.AI, MJ.AI]); g.draws = [2, 2, 2, 2];
+      g.players[1].hand = T('23m11p234p567p99s'); const handBefore = g.players[1].hand.length;
+      const tile = { id: ID++, t: 0 }; g.players[0].discards.push(tile); g.lastDiscard = { seat: 0, tile };
+      const r = await g.claims(0, tile); const p1 = g.players[1];
+      if (seq.length === 5) ok(r.type === 'none' && p1.melds.length === 0 && p1.hand.length === handBefore && g.players[0].discards.length === 1, '整局：下家傳 5 張的 seq 吃牌 → 不成立，手牌不變');
+      else ok(r.type === 'chi' && p1.melds[0].tiles.length === 3 && p1.hand.length === handBefore - 2, '整局：正常吃牌 → 3 張的順子、手牌少 2 張');
+    }
+  }
+  // 11. 快速向聽數（分組計算）和逐張窮舉的結果完全一樣
+  {
+    function ref(c, need) {
+        let best = 2 * need + 1;
+        const dfs = (i, sets, part, pair) => {
+          if (best <= -1) return;
+          while (i < 34 && !c[i]) i++;
+          if (i >= 34) { const p = Math.min(part, need - sets); const s = 2 * (need - sets) - p - pair; if (s < best) best = s; return; }
+          if (sets < need && c[i] >= 3) { c[i] -= 3; dfs(i, sets + 1, part, pair); c[i] += 3; }
+          if (sets < need && i < 27 && i % 9 <= 6 && c[i + 1] && c[i + 2]) { c[i]--; c[i + 1]--; c[i + 2]--; dfs(i, sets + 1, part, pair); c[i]++; c[i + 1]++; c[i + 2]++; }
+          if (c[i] >= 2) { c[i] -= 2; if (!pair) dfs(i, sets, part, 1); if (sets + part < need) dfs(i, sets, part + 1, pair); c[i] += 2; }
+          if (sets + part < need && i < 27) {
+            if (i % 9 <= 7 && c[i + 1]) { c[i]--; c[i + 1]--; dfs(i, sets, part + 1, pair); c[i]++; c[i + 1]++; }
+            if (i % 9 <= 6 && c[i + 2]) { c[i]--; c[i + 2]--; dfs(i, sets, part + 1, pair); c[i]++; c[i + 2]++; }
+          }
+          c[i]--; dfs(i, sets, part, pair); c[i]++;
+        };
+        dfs(0, 0, 0, 0); return best;
+    }
+    const rng = MJ.rngFrom(42); let bad = 0; const N = 3000;
+    for (let k = 0; k < N; k++) {
+      const need = 1 + Math.floor(rng() * 5), len = need * 3 + 1 + (rng() < .5 ? 1 : 0), narrow = rng() < .4; const c = new Array(34).fill(0);
+      for (let got = 0; got < len;) { const t = narrow ? Math.floor(rng() * 9) + 9 * Math.floor(rng() * 2) : Math.floor(rng() * 34); if (c[t] < 4) { c[t]++; got++; } }
+      if (ref(c.slice(), need) !== MJ.shanten(c.slice(), need)) bad++;
+    }
+    ok(bad === 0, `向聽數：${N} 手隨機牌和逐張窮舉比對，不一致 ${bad} 手`);
+  }
   // 9. 聽牌鎖定整局模擬：鎖定後手牌只有摸到的牌會進出，胡牌一定有問玩家
   {
     let games = 0, lockedHands = 0, autoDiscards = 0, tsumoPrompts = 0, ronPrompts = 0, bad = 0;
-    for (let k = 0; k < 40; k++) {
+    const SIM = +process.env.SIM_HANDS || 40; process.stdout.write(`     （聽牌鎖定整局模擬 ${SIM} 局，SIM_HANDS=數字 可調整）`);
+    for (let k = 0; k < SIM; k++) {
+      if (k % 10 === 0) process.stdout.write(' ' + k);
       let locked = false, snapshot = null;
       const ctrl0 = {
         isHuman: true,
@@ -135,7 +183,8 @@ function game(ctrls) {
       const g = new MJ.Game({ controllers: [ctrl0, MJ.AI, MJ.AI, MJ.AI], rng: MJ.rngFrom(900 + k) });
       await g.play(); games++;
     }
-    ok(bad === 0 && lockedHands > 5 && autoDiscards > 20, `鎖定模擬：${games} 局、鎖定 ${lockedHands} 次、自動打牌 ${autoDiscards} 次、自摸提示 ${tsumoPrompts}、胡牌提示 ${ronPrompts}、異常 ${bad}`);
+    process.stdout.write(' ' + SIM + '\n');
+    ok(bad === 0 && lockedHands > Math.min(5, SIM / 8) && autoDiscards > Math.min(20, SIM / 2), `鎖定模擬：${games} 局、鎖定 ${lockedHands} 次、自動打牌 ${autoDiscards} 次、自摸提示 ${tsumoPrompts}、胡牌提示 ${ronPrompts}、異常 ${bad}`);
   }
   console.log(fail ? 'FAILURES ' + fail : 'ALL RULE TESTS OK'); process.exit(fail ? 1 : 0);
 })();
