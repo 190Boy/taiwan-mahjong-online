@@ -51,8 +51,16 @@ const MJ = (function () {
     }
     return false;
   }
+  /* 嚦咕嚦咕：門清（沒有吃碰槓，連暗槓也不行 → need 一定是 5）、17 張＝7 個不同的對子＋1 個刻子；4 張一樣不算兩對 */
+  function isLigu(c, need) {
+    if (need !== 5) return false;
+    let pairs = 0, trips = 0;
+    for (let i = 0; i < 34; i++) { const n = c[i]; if (!n) continue; if (n === 2) pairs++; else if (n === 3) trips++; else return false; }
+    return pairs === 7 && trips === 1;
+  }
   function isWinCounts(c, need) {
     if (sum(c) !== need * 3 + 2) return false;
+    if (need === 5 && isLigu(c, need)) return true;
     for (let i = 0; i < 34; i++) if (c[i] >= 2) {
       c[i] -= 2; const ok = setsOnly(c, need); c[i] += 2; if (ok) return true;
     }
@@ -110,7 +118,19 @@ const MJ = (function () {
     GRP.set(key, hit);
     return hit;
   }
+  // 嚦咕嚦咕的向聽數：挑 8 種牌，各取 2 張，其中有 3 張的那種多算 1 張；差幾張 − 1
+  function liguShanten(c) {
+    const v = []; let three = false;
+    for (let i = 0; i < 34; i++) if (c[i]) { v.push(Math.min(2, c[i])); if (c[i] >= 3) three = true; }
+    v.sort((a, b) => b - a);
+    let m = 0; for (let i = 0; i < 8 && i < v.length; i++) m += v[i];
+    return 17 - (m + (three ? 1 : 0)) - 1;
+  }
   function shanten(c, need) {
+    const s = shantenStd(c, need);
+    return need === 5 && s > -1 ? Math.min(s, liguShanten(c)) : s;
+  }
+  function shantenStd(c, need) {
     const gs = [groupTuples(c, 0, 9, false), groupTuples(c, 9, 9, false), groupTuples(c, 18, 9, false), groupTuples(c, 27, 7, true)];
     // 逐組合併：狀態 (面子, 搭子, 眼)，面子／搭子最多算到 need
     let st = new Set([0]);
@@ -408,11 +428,9 @@ const MJ = (function () {
       if (self && this.draws && !this.anyCall && this.draws[seat] === 1) { if (seat === this.dealer) flags.tian = true; else flags.di = true; }
       { const c1 = c.slice(); c1[winTile.t]--; flags.single = waits(c1, need).length === 1; }
       let best = null;
-      for (const d of decompose(c, need)) {
-        const items = this.taiItems(p, d, winTile, self, flags);
-        const total = items.reduce((a, b) => a + b.tai, 0);
-        if (!best || total > best.total) best = { items, total };
-      }
+      const consider = items => { const total = items.reduce((a, b) => a + b.tai, 0); if (!best || total > best.total) best = { items, total }; };
+      for (const d of decompose(c, need)) consider(this.taiItems(p, d, winTile, self, flags));   // 同一手牌有多種拆法 → 取台數最高的
+      if (isLigu(c, need)) consider(this.liguItems(p, c, winTile, self, flags));
       return best || { items: [], total: 0 };
     }
     taiItems(p, d, winTile, self, flags) {
@@ -435,7 +453,11 @@ const MJ = (function () {
       const hasHonor = allT.some(isHonor);
       const suits = new Set(allT.filter(t => t < 27).map(t => (t / 9) | 0));
       const pungs = sets.filter(s => s.k === 'p');
-      if (sets.every(s => s.k === 'c') && !hasHonor && p.flowers.length === 0 && !self) add('平胡', 2);
+      // 平胡：全部順子、無字、無花、不是自摸，而且要「兩面聽」：胡的那張在手上某個順子的頭或尾，
+      // 而且那個順子不是 123（等 3 是邊張）或 789（等 7 是邊張）；單吊、嵌張、邊張都不算。也不能是獨聽（只聽一張）。
+      const wt = winTile.t;
+      const twoSided = d.sets.some(s => s.k === 'c' && ((wt === s.t && s.t % 9 !== 6) || (wt === s.t + 2 && s.t % 9 !== 0)));
+      if (sets.every(s => s.k === 'c') && !hasHonor && p.flowers.length === 0 && !self && twoSided && !flags.single) add('平胡', 2);
       if (sets.every(s => s.k === 'p')) add('碰碰胡', 4);
       if (!self && p.hand.length === 2 && exposed.length === 5) add('全求人', 2);
       if (suits.size === 0) add('字一色', 16);
@@ -453,7 +475,12 @@ const MJ = (function () {
       }
       const cp = pungs.filter(s => s.conc).length;
       if (cp >= 5) add('五暗刻', 8); else if (cp === 4) add('四暗刻', 5); else if (cp === 3) add('三暗刻', 2);
-      const ft = p.flowers.map(f => f.t);
+      this.commonItems(p, flags, add);
+      return items;
+    }
+    // 花、獨聽、搶槓、槓上開花、海底、河底（一般胡和嚦咕嚦咕共用）
+    commonItems(p, flags, add) {
+      const sw = this.seatWind(p.seat), ft = p.flowers.map(f => f.t);
       for (const g of [0, 4]) {
         const have = [0, 1, 2, 3].filter(i => ft.includes(34 + g + i));
         if (have.length === 4) add('花槓 ' + FLOWERS.slice(g, g + 4).join(''), 2);
@@ -464,6 +491,26 @@ const MJ = (function () {
       if (flags.kong) add('槓上開花', 1);
       if (flags.haidi) add('海底撈月', 1);
       if (flags.hedi) add('河底撈魚', 1);
+    }
+    /* 嚦咕嚦咕 8 台：門清是成立條件，不另計門清（自摸只加自摸 1 台）；
+       另可加計：天胡／地胡、混一色／清一色／字一色、刻子是三元牌或圈風／門風、花、獨聽、搶槓、槓上開花、海底、河底。
+       不計平胡、碰碰胡、暗刻。 */
+    liguItems(p, c, winTile, self, flags) {
+      const items = []; const add = (name, tai) => items.push({ name, tai });
+      const sw = this.seatWind(p.seat);
+      if (flags.tian) add('天胡', 24);
+      else if (flags.di) add('地胡', 16);
+      else if (self) add('自摸', 1);
+      add('嚦咕嚦咕', 8);
+      const ts = []; for (let i = 0; i < 34; i++) if (c[i]) ts.push(i);
+      const hasHonor = ts.some(isHonor), suits = new Set(ts.filter(t => t < 27).map(t => (t / 9) | 0));
+      if (suits.size === 0) add('字一色', 16);
+      else if (suits.size === 1) { if (hasHonor) add('混一色', 4); else add('清一色', 8); }
+      const tt = ts.find(i => c[i] === 3);
+      if (tt >= 31) add('三元牌 ' + tileName(tt), 1);
+      if (tt === 27 + this.roundWind) add('圈風 ' + tileName(tt), 1);
+      if (tt === 27 + sw) add('門風 ' + tileName(tt), 1);
+      this.commonItems(p, flags, add);
       return items;
     }
     win(seat, from, tile) {
@@ -664,6 +711,6 @@ const MJ = (function () {
   }
 
   return { SUITS, NUMS, WINDS, FLOWERS, RESERVE, BASE, PER, tileName, isHonor, isFlower, isTerminal, rngFrom, makeWall,
-    countsOf, isWinCounts, decompose, waits, shanten, checkClaim, lockWaits, lockedTurn, lockedClaim, Game, Session, SpecialWin, AI, AIS, LEVEL_NAMES, makeAI };
+    countsOf, isWinCounts, isLigu, decompose, waits, shanten, shantenStd, liguShanten, checkClaim, lockWaits, lockedTurn, lockedClaim, Game, Session, SpecialWin, AI, AIS, LEVEL_NAMES, makeAI };
 })();
 if (typeof module !== 'undefined') module.exports = MJ;

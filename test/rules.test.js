@@ -146,9 +146,50 @@ function game(ctrls) {
     for (let k = 0; k < N; k++) {
       const need = 1 + Math.floor(rng() * 5), len = need * 3 + 1 + (rng() < .5 ? 1 : 0), narrow = rng() < .4; const c = new Array(34).fill(0);
       for (let got = 0; got < len;) { const t = narrow ? Math.floor(rng() * 9) + 9 * Math.floor(rng() * 2) : Math.floor(rng() * 34); if (c[t] < 4) { c[t]++; got++; } }
-      if (ref(c.slice(), need) !== MJ.shanten(c.slice(), need)) bad++;
+      if (ref(c.slice(), need) !== MJ.shantenStd(c.slice(), need)) bad++;
     }
     ok(bad === 0, `向聽數：${N} 手隨機牌和逐張窮舉比對，不一致 ${bad} 手`);
+  }
+  // 12. 平胡要兩面聽：單吊、嵌張、邊張、對碰都不算
+  {
+    const ron = (hand, win, extra) => { const g = game(); g.draws = [3, 3, 3, 3]; g.anyCall = true; if (extra) extra(g); const p = g.players[1]; p.hand = T(hand); const wt = T(win)[0]; p.hand.push(wt); return g.win(1, 0, wt); };
+    const names = r => r.items.map(i => i.name);
+    const has = (r, n) => r.items.some(i => i.name === n);
+    let r = ron('123m456m789m234p56s99s', '4s'); ok(has(r, '平胡') && !has(r, '獨聽'), '平胡：56 條兩面聽，胡 4 條 → 平胡 ' + names(r));
+    r = ron('123m456m789m234p56s99s', '7s'); ok(has(r, '平胡'), '平胡：56 條兩面聽，胡 7 條 → 平胡');
+    r = ron('123m456m789m234p23s99s', '1s'); ok(has(r, '平胡'), '平胡：23 條等 1/4 條（胡 1 條也是兩面）→ 平胡');
+    r = ron('123m456m789m234p57s99s', '6s'); ok(!has(r, '平胡') && has(r, '獨聽'), '嵌張（57 等 6）→ 不算平胡，算獨聽 ' + names(r));
+    r = ron('123m456m789m234p12s99s', '3s'); ok(!has(r, '平胡') && has(r, '獨聽'), '邊張（12 等 3）→ 不算平胡');
+    r = ron('123m456m789m234p89s99p', '7s'); ok(!has(r, '平胡') && has(r, '獨聽'), '邊張（89 等 7）→ 不算平胡');
+    r = ron('123m456m789m234p567s9s', '9s'); ok(!has(r, '平胡') && has(r, '獨聽'), '單吊 → 不算平胡');
+    r = ron('123m456m789m234p55s99s', '5s'); ok(!has(r, '平胡'), '對碰（雙碰）→ 有刻子，不算平胡');
+    r = ron('123m456m789m23456s99s', '4s'); ok(has(r, '平胡'), '多種拆法（23456 條胡 4 條）→ 取兩面的拆法，算平胡');
+    r = ron('123m456m789m234s4567p', '4p'); ok(!has(r, '平胡') && !has(r, '獨聽'), '4567 筒等 4/7 筒（延伸單吊，兩種拆法都是單吊）→ 不算平胡、也不是獨聽');
+    { const g = game(); g.draws = [3, 3, 3, 3]; g.anyCall = true; const p = g.players[1]; p.hand = T('123m456m789m234p56s99s'); const wt = T('4s')[0]; p.hand.push(wt); r = g.win(1, null, wt); ok(!has(r, '平胡'), '兩面聽但自摸 → 不算平胡（原本條件不變）'); }
+    r = ron('123m456m789m234p56s99s', '4s', g => { g.players[1].flowers = [{ id: ID++, t: 34 }]; }); ok(!has(r, '平胡'), '兩面聽但有花 → 不算平胡（原本條件不變）');
+  }
+  // 13. 嚦咕嚦咕：7 個對子＋1 個刻子、門清（暗槓也不行）
+  {
+    const C = str => MJ.countsOf(T(str)); const has = (r, n) => r.items.some(i => i.name === n); const names = r => r.items.map(i => i.name + i.tai).join(',');
+    ok(MJ.isWinCounts(C('11m33m55m77m99p11p33p555s'), 5), '嚦咕嚦咕：7 對＋1 刻 → 可以胡');
+    ok(!MJ.isWinCounts(C('1111m33m55m77m99p11p555s'), 5), '嚦咕嚦咕：4 張一樣不算兩對');
+    ok(!MJ.isWinCounts(C('11m33m55m77m99p11p33p55s'), 4) && !MJ.isLigu(C('11m33m55m77m99p11p33p555s'), 4), '有吃碰槓（含暗槓，need<5）→ 不能嚦咕');
+    ok(MJ.waits(C('11m33m55m77m99p11p33p55s'), 5).length === 8, '嚦咕聽牌：8 個對子 → 聽 8 張');
+    ok(MJ.waits(C('11m33m55m77m99p11p555s5z'), 5).map(MJ.tileName).join() === '紅中', '嚦咕聽牌：1 刻＋6 對＋單張 → 只聽那張單張');
+    ok(MJ.waits(C('11m33m55m77m99p11p33p55s'), 4).length === 0, '有副露時同樣的牌不算聽嚦咕');
+    // 計台
+    const g = game(); g.draws = [3, 3, 3, 3]; g.anyCall = true; const p = g.players[1]; p.hand = T('11m33m55m77m99p11p33p55s'); let wt = T('5s')[0]; p.hand.push(wt);
+    let r = g.win(1, 0, wt); ok(has(r, '嚦咕嚦咕') && r.total === 8 && !has(r, '門清'), '嚦咕嚦咕放槍：8 台，不另計門清 → ' + names(r));
+    { const g2 = game(); g2.players[0].hand = T('11m33m55m77m99p11p33p55s'); ok(MJ.lockWaits(g2, 0).length === 8, '聽牌鎖定：嚦咕聽牌也能鎖定（聽 8 張）'); }
+    { const g2 = game(); g2.draws = [3, 3, 3, 3]; g2.anyCall = true; const q = g2.players[2]; q.hand = T('11m33m55m77m99p11p33p55s'); const w = T('5s')[0]; q.hand.push(w); const r2 = g2.win(2, null, w); ok(has(r2, '自摸') && !has(r2, '門清自摸') && r2.total === 9, '嚦咕嚦咕自摸：8＋自摸 1 → ' + names(r2)); }
+    { const g2 = game(); g2.draws = [1, 0, 0, 0]; g2.anyCall = false; const q = g2.players[0]; q.hand = T('11m33m55m77m99p11p33p55s'); const w = T('5s')[0]; q.hand.push(w); const r2 = g2.win(0, null, w); ok(has(r2, '天胡') && has(r2, '嚦咕嚦咕') && !has(r2, '自摸'), '天胡＋嚦咕嚦咕：' + names(r2)); }
+    { const g2 = game(); g2.draws = [3, 3, 3, 3]; g2.anyCall = true; const q = g2.players[1]; q.hand = T('11m33m55m77m99p11p555s7z'); const w = T('7z')[0]; q.hand.push(w); const r2 = g2.win(1, 0, w); ok(has(r2, '獨聽') && r2.total === 9, '嚦咕嚦咕單吊：8＋獨聽 1 → ' + names(r2)); }
+    { const g2 = game(); g2.draws = [3, 3, 3, 3]; g2.anyCall = true; const q = g2.players[1]; q.hand = T('11m22m33m55m66m88m99m55z'); const w = T('5z')[0]; q.hand.push(w); const r2 = g2.win(1, 0, w); ok(has(r2, '混一色') && has(r2, '三元牌 紅中'), '嚦咕嚦咕＋混一色＋紅中刻：' + names(r2)); }
+    { const g2 = game(); g2.draws = [3, 3, 3, 3]; g2.anyCall = true; const q = g2.players[1]; q.hand = T('112233m445566p7s999s'); const w = T('7s')[0]; q.hand.push(w); const r2 = g2.win(1, 0, w); ok(has(r2, '嚦咕嚦咕'), '同時是一般胡和嚦咕 → 取台數高的（嚦咕）：' + names(r2)); }
+    // 牌局流程：別人打出嚦咕要的牌 → 有「胡」可選；電腦會胡
+    { const g2 = game(); g2.players[1].hand = T('11m33m55m77m99p11p33p55s'); const o = g2.claimOptions(0, T('5s')[0]); ok(o[1] && o[1].hu, '牌局：別人打出嚦咕要的牌 → 可以胡'); ok(MJ.AI.claim(g2, 1, T('5s')[0], o[1]).type === 'hu', '電腦：嚦咕聽牌時會胡'); }
+    { const g2 = game(); g2.players[1].hand = T('11m33m55m77m99p11p33p5s'); g2.players[1].melds = [{ type: 'pon', t: 33, tiles: T('777z') }]; g2.players[1].hand = T('11m33m55m77m99p11p55s'); const o = g2.claimOptions(0, T('5s')[0]); ok(!(o[1] && o[1].hu), '牌局：有碰牌的人湊成對子 → 不能胡嚦咕'); }
+    ok(MJ.liguShanten(C('11m33m55m77m99p11p33p55s')) === 0 && MJ.shanten(C('11m33m55m77m99p11p33p55s'), 5) === 0 && MJ.shanten(C('11m33m55m77m99p11p33p5s7z'), 5) === 1, '電腦向聽數：認得嚦咕（8 對＝聽牌、7 對＋2 單張＝一向聽）');
   }
   // 9. 聽牌鎖定整局模擬：鎖定後手牌只有摸到的牌會進出，胡牌一定有問玩家
   {

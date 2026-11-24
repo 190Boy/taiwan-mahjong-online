@@ -158,6 +158,7 @@ table.tai tr.tot td{font-size:18px;border-bottom:none;color:#ffeb3b}
 .pkBtns{display:flex;gap:8px;justify-content:center;margin-top:8px}
 .smallbtn{background:rgba(255,255,255,.14);color:#fff;border:1px solid rgba(255,255,255,.35);border-radius:10px;padding:6px 14px;font-size:14px;cursor:pointer;font-family:inherit}
 details.rules summary{cursor:pointer;font-weight:700}
+.taiTbl{margin-top:6px;line-height:1.55}
 .pay .av{--avw:clamp(44px,11vw,76px);margin:2px auto 4px}
 .opp.active .av,.me.active .av{box-shadow:0 0 0 2px #ffd54f,0 0 10px #ffd54f}
 @keyframes breathe{0%,100%{transform:translateY(0)}50%{transform:translateY(.8px) scaleY(.985)}}
@@ -332,6 +333,17 @@ table.stt .av{--avw:30px;margin:auto}
   </div>
   <div id="lbMsg"></div>
   <button class="smallbtn" id="lbSolo">🤖 單機玩（對電腦，不用連線）</button>
+  <details class="rules taiTbl"><summary>台數表（本遊戲採用的規則）</summary>
+   <b>1 台</b>：莊家（連 N 拉 N 另加 2N）、門清、自摸、三元牌刻子（每副）、圈風刻、門風刻、正花、獨聽（只聽一張：單吊／嵌張／邊張）、搶槓、槓上開花、海底撈月、河底撈魚<br>
+   <b>2 台</b>：平胡、全求人、三暗刻、花槓（春夏秋冬或梅蘭竹菊）<br>
+   <b>3 台</b>：門清自摸（門清＋不求＋自摸）<br>
+   <b>4 台</b>：碰碰胡、混一色、小三元　<b>5 台</b>：四暗刻<br>
+   <b>8 台</b>：清一色、大三元、小四喜、五暗刻、<b>嚦咕嚦咕</b>、八仙過海、七搶一<br>
+   <b>16 台</b>：字一色、大四喜、地胡　<b>24 台</b>：天胡<br>
+   ・<b>平胡</b>：五副都是順子、沒有字牌、沒有花、不是自摸，而且要<b>兩面聽</b>（單吊、嵌張、邊張、對碰都不算；只聽一張也不算）。可另加門清。<br>
+   ・<b>嚦咕嚦咕</b>：7 個不同的對子＋1 個刻子（17 張），必須門清，有吃、碰、明槓或暗槓都不成立；4 張一樣不算兩對。門清是條件、不另計；自摸加 1 台；可另加天胡／地胡、混一色／清一色／字一色、刻子是三元牌或圈風／門風、花、獨聽、海底、河底等；不計平胡、碰碰胡、暗刻。<br>
+   ・同一手牌有多種看法時，取台數最高的算法。
+  </details>
  </div>
 </div>
 <div id="roomOv" class="overlay hidden"><div class="dialog" id="roomBox"></div></div>
@@ -353,6 +365,17 @@ table.stt .av{--avw:30px;margin:auto}
    ・胡牌：5 組面子＋1 對眼（17 張）。計分：底 300、每台 100，莊家另計莊家台與連莊台。<br>
    ・上方可切換音效、音量、語音喊牌、報牌名與速度；「👤 角色」可隨時換角色。
   </details>
+  <details class="rules taiTbl"><summary>台數表（本遊戲採用的規則）</summary>
+   <b>1 台</b>：莊家（連 N 拉 N 另加 2N）、門清、自摸、三元牌刻子（每副）、圈風刻、門風刻、正花、獨聽（只聽一張：單吊／嵌張／邊張）、搶槓、槓上開花、海底撈月、河底撈魚<br>
+   <b>2 台</b>：平胡、全求人、三暗刻、花槓（春夏秋冬或梅蘭竹菊）<br>
+   <b>3 台</b>：門清自摸（門清＋不求＋自摸）<br>
+   <b>4 台</b>：碰碰胡、混一色、小三元　<b>5 台</b>：四暗刻<br>
+   <b>8 台</b>：清一色、大三元、小四喜、五暗刻、<b>嚦咕嚦咕</b>、八仙過海、七搶一<br>
+   <b>16 台</b>：字一色、大四喜、地胡　<b>24 台</b>：天胡<br>
+   ・<b>平胡</b>：五副都是順子、沒有字牌、沒有花、不是自摸，而且要<b>兩面聽</b>（單吊、嵌張、邊張、對碰都不算；只聽一張也不算）。可另加門清。<br>
+   ・<b>嚦咕嚦咕</b>：7 個不同的對子＋1 個刻子（17 張），必須門清，有吃、碰、明槓或暗槓都不成立；4 張一樣不算兩對。門清是條件、不另計；自摸加 1 台；可另加天胡／地胡、混一色／清一色／字一色、刻子是三元牌或圈風／門風、花、獨聽、海底、河底等；不計平胡、碰碰胡、暗刻。<br>
+   ・同一手牌有多種看法時，取台數最高的算法。
+  </details>
   <button class="big-btn" id="startBtn">開始遊戲</button>
  </div>
 </div>
@@ -360,8 +383,8 @@ table.stt .av{--avw:30px;margin:auto}
 <div id="chatPal" class="hidden"></div>
 <div id="resultOv" class="overlay hidden"><div class="dialog" id="resultBox"></div></div>
 
-<script src="logic.js?v=8"></script>
-<script src="avatar-img.js?v=8"></script>
-<script src="app.js?v=8"></script>
+<script src="logic.js?v=9"></script>
+<script src="avatar-img.js?v=9"></script>
+<script src="app.js?v=9"></script>
 </body>
 </html>
