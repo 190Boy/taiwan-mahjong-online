@@ -3,6 +3,7 @@
 //  2. 同一條連線加入第二個房間時，第一個房間的座位會放開（不會害那房每次等 20 秒）
 //  3. 吃牌 seq 帶多餘的牌不會吃出 6 張；各種亂七八糟的訊息不會弄壞伺服器
 //  4. 猜房號（加入失敗）有次數限制
+//  5. 離開牌桌／解散牌桌  6. 語音信令轉送  7. /ice（TURN 短效帳密）
 const { spawn } = require('child_process');
 const path = require('path');
 const WebSocket = require('ws');
@@ -116,6 +117,91 @@ function autoplay(c) {
     for (let i = 0; i < 3; i++) { const r = await A.next(m => m.t === 'result', 20000); if (!r) break; A.send({ t: 'again' }); }
     ok(seen > 0 && !bad, `吃牌傳 5 張的 seq（試了 ${seen} 次）→ 一律當作「過」，沒有出現 6 張的組、手牌數正常`);
     await A.close();
+  }
+
+  /* ---------- 5. 離開牌桌／解散牌桌 ---------- */
+  {
+    const H = await client('H'); H.send({ t: 'create', name: 'Host' }); const jh = await joined(H); const code = jh.code;
+    const M = await client('M'); M.send({ t: 'join', code, name: 'Mem' }); const jm = await joined(M);
+    const N = await client('N'); N.send({ t: 'join', code, name: 'Nina' }); const jn = await joined(N);
+    // 大廳：成員離開 → 座位空出、token 作廢
+    M.send({ t: 'leave' }); const lm = await M.wait(m => m.t === 'left');
+    const rm1 = await H.wait(m => m.t === 'room' && !m.absSeats[jm.seat].human, 3000);
+    ok(!!lm && !!rm1, '大廳：成員離開牌桌 → 座位空出來（變成電腦空位）');
+    const M2 = await client('M2'); M2.send({ t: 'join', code, token: jm.token }); const jm2 = await joined(M2);
+    ok(jm2.t === 'joined' && jm2.seat !== undefined && jm2.token !== jm.token && !jm2.rejoin, '離開後舊 token 作廢（再用舊 token 只會當新玩家加入）');
+    M2.send({ t: 'leave' }); await M2.wait(m => m.t === 'left');
+    // 牌局中：成員離開 → 座位改由電腦代打、牌局繼續
+    [H, N].forEach(autoplay);
+    H.send({ t: 'start' }); await H.wait(m => m.t === 'state', 5000);
+    N.msgs = []; N.send({ t: 'leave' }); await N.wait(m => m.t === 'left');
+    const rm2 = await H.wait(m => m.t === 'room' && m.absSeats[jn.seat].ai && /電腦/.test(m.absSeats[jn.seat].name), 3000);
+    ok(!!rm2, '牌局中：成員離開 → 座位交給電腦代打（顯示「Nina(電腦)」）');
+    H.msgs = []; const st = await H.wait(m => m.t === 'state' && m.data && m.data.seat === 1, 8000);
+    ok(!!st, '牌局中：離開後牌局繼續進行');
+    const N2 = await client('N2'); N2.send({ t: 'join', code, token: jn.token }); const jn2 = await joined(N2);
+    ok(jn2.t === 'joined' ? jn2.seat !== jn.seat || !jn2.rejoin : true, '離開後不能用舊 token 回到原座位');
+    await N2.close();
+    // 房主離開 → 房主交給其他真人
+    const P = await client('P'); P.send({ t: 'create', name: 'P' }); const jp = await joined(P);
+    const Q = await client('Q'); Q.send({ t: 'join', code: jp.code, name: 'Q' }); const jq = await joined(Q);
+    Q.msgs = []; P.send({ t: 'leave' }); const rq = await Q.wait(m => m.t === 'room' && m.isHost, 3000);
+    ok(!!rq, '房主離開 → 房主交給另一位真人');
+    Q.send({ t: 'leave' }); await Q.wait(m => m.t === 'left'); await sleep(100);
+    const Z = await client('Z'); Z.send({ t: 'join', code: jp.code, name: 'Z' }); const jz = await joined(Z);
+    ok(jz.t === 'err' && jz.code === 'noroom', '最後一位真人離開 → 房間直接刪除');
+    // 解散：只有房主可以；所有人收到 dissolved、房間刪除
+    const D = await client('D'); D.send({ t: 'create', name: 'D' }); const jd = await joined(D);
+    const E = await client('E'); E.send({ t: 'join', code: jd.code, name: 'E' }); await joined(E);
+    E.send({ t: 'dissolve' }); await sleep(200);
+    const F = await client('F'); F.send({ t: 'join', code: jd.code, name: 'F' }); const jf = await joined(F);
+    ok(jf.t === 'joined', '非房主送「解散」→ 沒有效果');
+    E.send({ t: 'vjoin' }); await sleep(100);
+    [D, E, F].forEach(autoplay); D.send({ t: 'start' }); await D.wait(m => m.t === 'state', 5000);
+    D.send({ t: 'dissolve' });
+    const dd = await Promise.all([D, E, F].map(c => c.wait(m => m.t === 'dissolved', 3000)));
+    ok(dd.every(Boolean) && /解散/.test(dd[1].msg), '房主解散（牌局中）→ 所有人收到「房主解散了牌桌」');
+    const G = await client('G'); G.send({ t: 'join', code: jd.code, token: 'x' }); const jg = await joined(G);
+    ok(jg.t === 'err' && jg.code === 'noroom', '解散後房間刪除，加入會「找不到房號」');
+    E.msgs = []; E.send({ t: 'chat', i: 1 }); const e2 = await E.wait(m => m.t === 'err', 1500);
+    ok(e2 && /尚未加入/.test(e2.msg), '解散後原本的連線不再屬於任何房間');
+    await sleep(300); ok(!/game error|handle error/.test(srvErr), '解散進行中的牌局，伺服器沒有出錯');
+    for (const c of [H, M, M2, N, P, Q, Z, D, E, F, G]) try { await c.close(); } catch (e) { }
+  }
+
+  /* ---------- 6. 語音信令轉送：offer／answer／ICE 原樣送到、一次幾十個 ICE 不會被限速擋掉 ---------- */
+  {
+    const A = await client('A'); A.send({ t: 'create', name: 'VA' }); const ja = await joined(A);
+    const B = await client('B'); B.send({ t: 'join', code: ja.code, name: 'VB' }); await joined(B);
+    A.send({ t: 'vjoin' }); B.send({ t: 'vjoin' }); await sleep(300);
+    const ra = A.msgs.filter(m => m.t === 'room').pop(), rb = B.msgs.filter(m => m.t === 'room').pop();
+    const vidA = ra.seats[0].voice.id, vidB = rb.seats[0].voice.id;
+    const relB = rb.seats.findIndex(x => x.voice && x.voice.id === vidA), relA = ra.seats.findIndex(x => x.voice && x.voice.id === vidB);
+    const sdp = 'v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n' + 'a=x\r\n'.repeat(400);
+    B.send({ t: 'rtc', to: relB, vid: vidA, d: { type: 'offer', sdp } });
+    const cands = []; for (let i = 0; i < 60; i++) { const c = { candidate: `candidate:${i} 1 udp 2122260223 10.0.0.${i} 5${i}000 typ ${i % 3 ? 'srflx raddr 0.0.0.0 rport 0' : 'host'} generation 0`, sdpMid: '0', sdpMLineIndex: 0, usernameFragment: 'abcd' }; cands.push(c); B.send({ t: 'rtc', to: relB, vid: vidA, d: { type: 'ice', c } }); }
+    B.send({ t: 'rtc', to: relB, vid: vidA, d: { type: 'ice', c: { candidate: 'candidate:9 1 tcp 1 1.2.3.4 443 typ relay raddr 0.0.0.0 rport 0', sdpMid: null, sdpMLineIndex: null } } });
+    await sleep(500);
+    const got = A.msgs.filter(m => m.t === 'rtc');
+    const off = got.find(m => m.d.type === 'offer'), ices = got.filter(m => m.d.type === 'ice');
+    ok(off && off.d.sdp === sdp && off.from === relA && off.vid === vidB, 'offer 原樣轉送（含發送者座位、語音編號）');
+    ok(ices.length === 61 && ices.slice(0, 60).every((m, i) => m.d.c.candidate === cands[i].candidate && m.d.c.sdpMid === '0' && m.d.c.sdpMLineIndex === 0), `一次 61 個 ICE 候選全部依序轉送（收到 ${ices.length}）`);
+    ok(ices[60] && ices[60].d.c.sdpMid === null && /typ relay/.test(ices[60].d.c.candidate), 'relay 候選、sdpMid=null 也正確轉送');
+    A.send({ t: 'rtc', to: relA, vid: vidB, d: { type: 'answer', sdp: 'v=0 answer' } }); const ans = await B.wait(m => m.t === 'rtc' && m.d.type === 'answer', 2000);
+    ok(ans && ans.d.sdp === 'v=0 answer', 'answer 轉送回去');
+    A.msgs = []; B.send({ t: 'rtc', to: relB, vid: 'stale', d: { type: 'ice', c: cands[0] } }); await sleep(200);
+    ok(!A.msgs.some(m => m.t === 'rtc'), '舊的語音編號（對方已重新加入）→ 信令丟掉');
+    for (const c of [A, B]) await c.close();
+  }
+
+  /* ---------- 7. /ice：回傳 STUN＋TURN 短效帳密，不含金鑰 ---------- */
+  {
+    const r = await fetch(`http://localhost:${PORT}/ice`); const j = await r.json();
+    const turn = j.iceServers.filter(x => [].concat(x.urls).some(u => /^turns?:/.test(u)));
+    const urls = turn.flatMap(x => [].concat(x.urls));
+    ok(r.headers.get('access-control-allow-origin') === '*' && j.iceServers.some(x => [].concat(x.urls).some(u => /^stun:/.test(u))), '/ice 有 STUN、允許 GitHub Pages 跨網域讀取');
+    ok(turn.length && turn.every(x => /^\d+:/.test(x.username) && x.credential) && urls.some(u => /^turns:.*:443/.test(u)) && urls.some(u => /transport=tcp/.test(u)), `/ice 有 TURN（${j.provider}）：短效帳密、含 turns:443 與 TCP（公司網路只開 443 也能走）`);
+    ok(!JSON.stringify(j).includes('openrelayprojectsecret'), '/ice 不會把 TURN 金鑰送給瀏覽器');
   }
 
   /* ---------- 4. 猜房號的次數限制 ---------- */

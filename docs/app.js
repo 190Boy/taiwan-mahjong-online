@@ -8,7 +8,7 @@ const FONT = "'Noto Serif CJK TC','Noto Serif TC','Songti TC','PMingLiU','MingLi
 const C = { R: '#c62828', G: '#1e7d43', B: '#1f5fa8', K: '#1a2340' };
 const txt = (x, y, s, size, fill) => `<text x="${x}" y="${y}" font-size="${size}" fill="${fill}" text-anchor="middle" font-family="${FONT}" font-weight="900">${s}</text>`;
 const dot = (x, y, r, col) => `<circle cx="${x}" cy="${y}" r="${r}" fill="${col}"/><circle cx="${x}" cy="${y}" r="${r * .64}" fill="#fff"/><circle cx="${x}" cy="${y}" r="${r * .36}" fill="${col}"/>`;
-const stick = (x, y, col, h = 26) => { const w = 7.5; return `<rect x="${x - w / 2}" y="${y - h / 2}" width="${w}" height="${h}" rx="3.6" fill="${col}"/><rect x="${x - w / 2 - .6}" y="${y - 1.3}" width="${w + 1.2}" height="2.6" rx="1" fill="#0b3d1f" opacity=".55"/><line x1="${x}" y1="${y - h / 2 + 3}" x2="${x}" y2="${y + h / 2 - 3}" stroke="#fff" stroke-width="1.3" opacity=".5"/>`; };
+const stick = (x, y, col, h = 26, rot = 0) => { const w = 7.5; return `${rot ? `<g transform="rotate(${rot} ${x} ${y})">` : ''}<rect x="${x - w / 2}" y="${y - h / 2}" width="${w}" height="${h}" rx="3.6" fill="${col}"/><rect x="${x - w / 2 - .6}" y="${y - 1.3}" width="${w + 1.2}" height="2.6" rx="1" fill="#0b3d1f" opacity=".55"/><line x1="${x}" y1="${y - h / 2 + 3}" x2="${x}" y2="${y + h / 2 - 3}" stroke="#fff" stroke-width="1.3" opacity=".5"/>${rot ? '</g>' : ''}`; };
 const DOTS = {
   2: [[30, 22, C.G], [30, 58, C.B]], 3: [[16, 17, C.B], [30, 40, C.R], [44, 63, C.G]],
   4: [[18, 22, C.B], [42, 22, C.G], [18, 58, C.G], [42, 58, C.B]],
@@ -25,7 +25,9 @@ const STICKS = {
   5: [[15, 21, C.G], [45, 21, C.B], [30, 40, C.R], [15, 59, C.B], [45, 59, C.G]],
   6: [14, 30, 46].flatMap(x => [[x, 22, C.G], [x, 58, C.B]]),
   7: [[30, 14, C.R, 20], ...[14, 30, 46].flatMap(x => [[x, 41, C.G, 20], [x, 66, C.G, 20]])],
-  8: [12, 24, 36, 48].flatMap((x, i) => [[x, 22, i % 2 ? C.B : C.G], [x, 58, i % 2 ? C.G : C.B]]),
+  // 八條：上半「W」（左右兩根直的，中間兩根斜的在上方中間相接成尖頂），下半「M」（中間兩根斜的在下方中間相接成 V）
+  8: [[10, 21, C.G, 30], [23.6, 21.5, C.B, 30, 21], [36.4, 21.5, C.B, 30, -21], [50, 21, C.G, 30],
+      [10, 59, C.G, 30], [23.6, 58.5, C.B, 30, -21], [36.4, 58.5, C.B, 30, 21], [50, 59, C.G, 30]],
   9: [14, 30, 46].flatMap(x => [15, 40, 65].map(y => [x, y, x === 30 ? C.R : (y === 40 ? C.B : C.G), 21]))
 };
 const SVGC = {};
@@ -43,7 +45,7 @@ function face(t) {
     if (n === 1) s = `<path d="M24 58 Q14 70 10 77 M30 62 Q28 72 27 78 M36 60 Q42 70 46 77" stroke="${C.G}" stroke-width="3.5" fill="none" stroke-linecap="round"/>` +
       `<ellipse cx="30" cy="46" rx="13" ry="16" fill="${C.G}"/><path d="M22 44 Q30 36 38 44 Q30 56 22 44Z" fill="${C.B}"/>` +
       `<circle cx="31" cy="22" r="9" fill="${C.R}"/><circle cx="34" cy="20" r="2.2" fill="#fff"/><polygon points="39,21 48,22 39,26" fill="#e69500"/><path d="M28 13 L26 6 M31 13 L31 5 M34 13 L37 6" stroke="${C.R}" stroke-width="2"/>`;
-    else s = STICKS[n].map(([x, y, c, h]) => stick(x, y, c, h || 28)).join('');
+    else s = STICKS[n].map(([x, y, c, h, r]) => stick(x, y, c, h || 28, r || 0)).join('');
   } else if (t < 31) s = txt(30, 57, WINDS[t - 27], 46, C.K);
   else if (t === 31) s = txt(30, 57, '中', 48, C.R);
   else if (t === 32) s = txt(30, 57, '發', 46, C.G);
@@ -711,20 +713,57 @@ function renderRoom() {
     <div class="rmSeats">${seats}</div>
     <div class="rmLv">電腦難度：${r.isHost ? `<select id="rmLevel">${['easy', 'normal', 'hard'].map(k => `<option value="${k}" ${r.level === k ? 'selected' : ''}>${MJ.LEVEL_NAMES[k]}</option>`).join('')}</select>` : `<b>${MJ.LEVEL_NAMES[r.level || 'normal']}</b>`}</div>
     <div class="rmBtns">${r.isHost ? `<button class="big-btn" id="rmStart">▶ 開始（空位由電腦代打）</button>` : '<p>等待房主開始遊戲…</p>'}</div>
-    <div class="rmBtns"><button class="smallbtn" id="rmVoice">🎤 加入語音</button><button class="smallbtn" id="rmCopy">📋 複製邀請連結</button><button class="smallbtn" id="rmLeave">🚪 離開房間</button></div>`;
+    <div class="rmBtns"><button class="smallbtn" id="rmVoice">🎤 加入語音</button><button class="smallbtn" id="rmCopy">📋 複製邀請連結</button><button class="smallbtn" id="rmLeave">🚪 離開牌桌</button>${r.isHost ? '<button class="smallbtn danger" id="rmDissolve">💥 解散牌桌</button>' : ''}</div>`;
   if ($('#rmLevel')) $('#rmLevel').onchange = e => Net.send({ t: 'level', v: e.target.value });
   if ($('#rmStart')) $('#rmStart').onclick = () => { Snd.ctx || Snd.init(); Net.send({ t: 'start' }); };
   $('#rmCopy').onclick = () => { const done = () => { $('#rmCopy').textContent = '✅ 已複製'; }; if (navigator.clipboard) navigator.clipboard.writeText(link).then(done, () => prompt('複製這個連結：', link)); else prompt('複製這個連結：', link); };
   $('#rmLeave').onclick = () => leaveRoom();
+  if ($('#rmDissolve')) $('#rmDissolve').onclick = () => dissolveTable();
   $('#rmVoice').onclick = () => { if (Voice.on) Voice.leave(); else Voice.join(); };
   if (typeof Voice !== 'undefined') Voice.render();
 }
-function leaveRoom() {
-  Voice.leave();
-  Net.send({ t: 'leave' }); Profile.setSess(null);
-  setTimeout(() => Net.close(), 200);
-  UI.online = false; UI.room = null; UI.game = null; UI.pending = null; $('#bChat').style.display = 'none'; $('#aiLevel').style.display = '';
-  ov('#roomOv', false); ov('#resultOv', false); ov('#lobbyOv', true); Lobby.render(); lbMsg('');
+/* 確認視窗（取代 confirm()，手機上比較好看） */
+function confirmBox(title, msg, okText, danger) {
+  return new Promise(res => {
+    const o = $('#cfmOv'); $('#cfmTitle').textContent = title; $('#cfmMsg').textContent = msg;
+    const ok = $('#cfmOk'), no = $('#cfmNo'); ok.textContent = okText || '確定'; no.textContent = '取消'; $('#cfmX').style.display = 'none'; ok.classList.toggle('danger', !!danger);
+    const done = v => { o.classList.add('hidden'); ok.onclick = no.onclick = null; res(v); };
+    ok.onclick = () => done(true); no.onclick = () => done(false); o.classList.remove('hidden');
+  });
+}
+function backToLobby(msg) {
+  Voice.leave(true); try { sessionStorage.removeItem(Voice.KEY); } catch (e) { }
+  Profile.setSess(null); Net.close();
+  UI.online = false; UI.room = null; UI.game = null; UI.pending = null; UI.lock = null;
+  $('#bChat').style.display = 'none'; $('#bLeave').style.display = 'none'; $('#aiLevel').style.display = ''; $('#bChar').style.display = '';
+  ov('#roomOv', false); ov('#resultOv', false); ov('#chatPal', false); ov('#lobbyOv', true); Lobby.render(); lbMsg(msg || ''); render();
+  try { const sq = new URLSearchParams(location.search).get('server'); history.replaceState(null, '', location.pathname + (sq ? '?server=' + encodeURIComponent(sq) : '')); } catch (e) { }
+}
+// 離開牌桌：牌局中你的座位改由電腦代打到結束；大廳中座位空出來。通行碼作廢，不能再回到這個座位。
+async function leaveRoom() {
+  const r = UI.room; const playing = r && r.phase !== 'lobby';
+  if (playing && !await confirmBox('離開牌桌？', '牌局進行中。離開後你的座位會由電腦代打，之後不能再回到這個座位。' + (r.isHost ? '房主會交給其他玩家。' : ''), '🚪 離開', true)) return;
+  if (Voice.on) Net.send({ t: 'vleave' });
+  Net.send({ t: 'leave' });
+  setTimeout(() => backToLobby('你已離開牌桌'), 150);
+}
+// 解散牌桌（房主）：所有人回到大廳、房間刪除、語音關閉
+async function dissolveTable() {
+  if (!UI.room || !UI.room.isHost) return;
+  if (!await confirmBox('解散牌桌？', '所有玩家都會被送回大廳，這個房間會被刪除（牌局中也會立刻結束）。', '💥 解散', true)) return;
+  Net.send({ t: 'dissolve' });
+  setTimeout(() => { if (UI.online) backToLobby('你已解散牌桌'); }, 2500);
+}
+async function tableMenu() {
+  if (!UI.room) return;
+  if (UI.room.isHost) {
+    const o = $('#cfmOv'); $('#cfmTitle').textContent = '牌桌'; $('#cfmMsg').textContent = '你是房主：可以自己離開（房主交給其他玩家），或解散整個牌桌。';
+    const ok = $('#cfmOk'), no = $('#cfmNo'), x = $('#cfmX');
+    ok.textContent = '💥 解散牌桌'; ok.classList.add('danger'); no.textContent = '🚪 離開牌桌'; x.style.display = '';
+    const close = () => { o.classList.add('hidden'); ok.onclick = no.onclick = x.onclick = null; x.style.display = 'none'; };
+    ok.onclick = () => { close(); dissolveTable(); }; no.onclick = () => { close(); leaveRoom(); }; x.onclick = close;
+    o.classList.remove('hidden');
+  } else leaveRoom();
 }
 function applyRoomSeats() {
   const r = UI.room; if (!r) return;
@@ -751,7 +790,7 @@ function onNet(m) {
   switch (m.t) {
     case 'joined':
       UI.online = true; Profile.setSess({ code: m.code, token: m.token });
-      ov('#lobbyOv', false); ov('#startOv', false); $('#bChar').style.display = 'none'; $('#bChat').style.display = ''; $('#aiLevel').style.display = 'none'; lbMsg('');
+      ov('#lobbyOv', false); ov('#startOv', false); $('#bChar').style.display = 'none'; $('#bChat').style.display = ''; $('#bLeave').style.display = ''; $('#aiLevel').style.display = 'none'; lbMsg('');
       try { { const sq = new URLSearchParams(location.search).get('server'); history.replaceState(null, '', location.pathname + '?room=' + m.code + (sq ? '&server=' + encodeURIComponent(sq) : '')); } } catch (e) { }
       setTimeout(() => Voice.onJoined(), 300);
       break;
@@ -785,6 +824,7 @@ function onNet(m) {
       break;
     case 'kicked': Voice.leave(true); Net.close(); UI.online = false; ov('#lobbyOv', true); Lobby.render(); lbMsg(m.msg); break;
     case 'left': break;
+    case 'dissolved': if ($('#lbCode')) $('#lbCode').value = ''; backToLobby(m.msg ? m.msg + '，大家都回到大廳了' : '牌桌已解散'); break;
     case 'chat': Chat.show(m.seat, m.i); break;
     case 'rtc': Voice.onSignal(m); break;
     case 'lock': { const was = !!UI.lock; UI.lock = m.on ? { autoHu: !!m.autoHu, waits: m.waits || null } : null; if (m.on && !was) callout('🔒 聽牌鎖定'); if (!m.on && m.why) callout(m.why); render(); break; }
@@ -942,7 +982,25 @@ document.addEventListener('visibilitychange', () => {
 
 
 /* ================= 語音通話（WebRTC 點對點；伺服器只轉送信令，聲音不經過伺服器） ================= */
-const VOICE_ICE = window.MJ_ICE || [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
+const VOICE_STUN = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
+// ICE 伺服器（STUN＋TURN 中繼）向遊戲伺服器的 /ice 拿短效帳密；拿不到就只用 STUN。window.MJ_ICE 只給測試用。
+const IceCfg = {
+  v: null, at: 0,
+  url() { try { const u = new URL(SERVER_WS.replace(/^ws/, 'http')); u.pathname = u.pathname.replace(/\/ws$/, '') + '/ice'; u.search = ''; return u.href; } catch (e) { return null; } },
+  async get() {
+    if (window.MJ_ICE) return { iceServers: window.MJ_ICE, provider: 'test' };
+    if (this.v && Date.now() - this.at < 30 * 60 * 1000) return this.v;
+    try {
+      const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 6000);
+      const r = await fetch(this.url(), { signal: ctl.signal, cache: 'no-store' }); clearTimeout(t);
+      const j = await r.json(); if (!Array.isArray(j.iceServers)) throw new Error('bad');
+      this.v = j; this.at = Date.now();
+    } catch (e) { this.v = { iceServers: VOICE_STUN, provider: 'stun-only', error: 'fetch' }; this.at = Date.now() - 25 * 60 * 1000; }
+    return this.v;
+  },
+  hasRelay(v) { return !!(v && v.iceServers.some(x => [].concat(x.urls || []).some(u => /^turns?:/.test(u)))); }
+};
+const candType = c => { const m = /\btyp (\w+)/.exec(c || ''); return m ? m[1] : '?'; };
 const Voice = {
   on: false, joining: false, stream: null, muted: false, myVid: null, myN: 0, peers: {}, meters: {}, speak: {}, localMutes: {}, needTap: false,
   KEY: 'mj16_voice',
@@ -953,7 +1011,14 @@ const Voice = {
     this.joining = true; this.render();
     try {
       this.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
-    } catch (e) { this.joining = false; callout('沒有取得麥克風權限'); this.render(); return; }
+    } catch (e) {
+      this.joining = false; this.render();
+      const n = e && e.name;
+      callout(n === 'NotAllowedError' || n === 'SecurityError' ? '麥克風權限被拒絕（請到瀏覽器網址列旁的設定允許麥克風）' : n === 'NotFoundError' ? '找不到麥克風' : n === 'NotReadableError' ? '麥克風被其他程式占用' : '沒有取得麥克風（' + (n || '未知錯誤') + '）');
+      return;
+    }
+    this.ice = await IceCfg.get();
+    console.info('[voice] ICE provider:', this.ice.provider, '中繼(TURN)：', IceCfg.hasRelay(this.ice) ? '有' : '沒有');
     this.joining = false; this.on = true; this.muted = false;
     try { sessionStorage.setItem(this.KEY, '1'); } catch (e) { }
     this.audioSession(true);
@@ -966,7 +1031,7 @@ const Voice = {
     for (const s of Object.keys(this.peers)) this.closePeer(+s);
     if (this.stream) this.stream.getTracks().forEach(t => t.stop());
     const was = this.on;
-    this.stream = null; this.on = false; this.joining = false; this.myVid = null; this.meters = {}; this.speak = {};
+    this.stream = null; this.on = false; this.joining = false; this.myVid = null; this.staleVid = null; this.meters = {}; this.speak = {};
     if (!silent) { if (was) Net.send({ t: 'vleave' }); try { sessionStorage.removeItem(this.KEY); } catch (e) { } }
     this.audioSession(false); this.render();
   },
@@ -990,7 +1055,8 @@ const Voice = {
     const r = UI.room; if (!r || !r.seats) return;
     const me = r.seats[0];
     if (this.on) {
-      if (me && me.voice) { this.myVid = me.voice.id; this.myN = me.voice.n; }
+      if (me && me.voice && me.voice.id === this.staleVid) return this.render();   // 重試中：等伺服器給新的語音編號
+      if (me && me.voice) { this.myVid = me.voice.id; this.myN = me.voice.n; this.staleVid = null; }
       else if (this.myVid) {                        // 伺服器那邊掉了（重新連線）→ 重新加入
         this.myVid = null; for (const s of Object.keys(this.peers)) this.closePeer(+s);
         Net.send({ t: 'vjoin', muted: this.muted });
@@ -1005,11 +1071,18 @@ const Voice = {
     this.render();
   },
   makePeer(s, v, offerer) {
-    let pc; try { pc = new RTCPeerConnection({ iceServers: VOICE_ICE }); } catch (e) { return; }
-    const pe = { pc, vid: v.id, state: 'connecting', q: [], audio: null, remoteSet: false, localMute: !!this.localMutes[v.id] };
+    const ice = this.ice || { iceServers: window.MJ_ICE || VOICE_STUN, provider: 'stun-only' };
+    let pc; try { pc = new RTCPeerConnection({ iceServers: ice.iceServers }); } catch (e) { console.warn('[voice] RTCPeerConnection', e); return; }
+    const pe = { pc, vid: v.id, state: 'connecting', q: [], audio: null, remoteSet: false, localMute: !!this.localMutes[v.id],
+      diag: { local: {}, remote: {}, errors: [], relayCfg: IceCfg.hasRelay(ice), provider: ice.provider, gathered: false, t0: Date.now() } };
     this.peers[s] = pe;
     this.stream.getTracks().forEach(t => pc.addTrack(t, this.stream));
-    pc.onicecandidate = e => { if (e.candidate) this.sig(s, { type: 'ice', c: e.candidate.toJSON ? e.candidate.toJSON() : e.candidate }); };
+    pc.onicecandidate = e => {
+      if (!e.candidate) { pe.diag.gathered = true; return; }
+      const ty = candType(e.candidate.candidate); pe.diag.local[ty] = (pe.diag.local[ty] || 0) + 1;
+      this.sig(s, { type: 'ice', c: e.candidate.toJSON ? e.candidate.toJSON() : e.candidate });
+    };
+    pc.onicecandidateerror = e => { if (pe.diag.errors.length < 8) pe.diag.errors.push((e.url || '') + ' ' + e.errorCode + ' ' + (e.errorText || '')); };
     pc.ontrack = e => {
       const st = (e.streams && e.streams[0]) || new MediaStream([e.track]);
       if (!pe.audio) { const a = document.createElement('audio'); a.autoplay = true; a.setAttribute('playsinline', ''); a.className = 'vcAudio'; a.dataset.seat = s; document.body.appendChild(a); pe.audio = a; }
@@ -1021,12 +1094,12 @@ const Voice = {
       if (this.peers[s] !== pe) return;
       const cs = pc.connectionState || '', is = pc.iceConnectionState || '';
       if (cs === 'connected' || is === 'connected' || is === 'completed') { pe.state = 'connected'; clearTimeout(pe.timer); }
-      else if (cs === 'failed' || is === 'failed') pe.state = 'failed';
+      else if (cs === 'failed' || is === 'failed') { if (pe.state !== 'failed') { pe.state = 'failed'; this.diagnose(s, pe); } }
       else if (cs === 'disconnected' || is === 'disconnected') pe.state = 'connecting';
       this.render();
     };
     pc.onconnectionstatechange = upd; pc.oniceconnectionstatechange = upd;
-    pe.timer = setTimeout(() => { if (this.peers[s] === pe && pe.state !== 'connected') { pe.state = 'failed'; this.render(); } }, 20000);
+    pe.timer = setTimeout(() => { if (this.peers[s] === pe && pe.state !== 'connected') { pe.state = 'failed'; this.diagnose(s, pe); this.render(); } }, 25000);
     if (offerer) (async () => {
       try { const o = await pc.createOffer(); await pc.setLocalDescription(o); this.sig(s, { type: 'offer', sdp: pc.localDescription.sdp }); }
       catch (e) { pe.state = 'failed'; this.render(); }
@@ -1051,9 +1124,34 @@ const Voice = {
         if (pc.signalingState !== 'have-local-offer') return;
         await pc.setRemoteDescription({ type: 'answer', sdp: d.sdp }); pe.remoteSet = true; await this.flush(pe);
       } else if (d.type === 'ice' && d.c) {
+        const ty = candType(d.c.candidate); pe.diag.remote[ty] = (pe.diag.remote[ty] || 0) + 1;
         if (pe.remoteSet) await pc.addIceCandidate(d.c); else pe.q.push(d.c);
       }
     } catch (e) { console.warn('voice signal', e && e.message); }
+  },
+  // 連不上時判斷原因（畫面顯示一句話，細節寫到 console）
+  diagnose(s, pe) {
+    const d = pe.diag, L = d.local, R = d.remote, n = o => Object.values(o).reduce((a, b) => a + b, 0);
+    let why;
+    if (!n(R)) why = '沒收到對方的連線資訊（對方可能網路斷線或瀏覽器擋住）';
+    else if (!L.srflx && !L.relay) why = '你的網路擋住了語音（UDP／STUN 被擋，可能是公司防火牆）';
+    else if (!d.relayCfg) why = '雙方網路無法直接連線，而且沒有中繼伺服器（TURN）可用';
+    else if (!L.relay && !R.relay) why = '中繼伺服器（TURN）也連不上，網路可能只允許特定連線';
+    else if (!L.relay) why = '你這邊連不上中繼伺服器（TURN）';
+    else if (!R.relay) why = '對方連不上中繼伺服器（TURN）';
+    else why = '雙方網路無法互通（連中繼也失敗）';
+    pe.why = why;
+    const info = { seat: s, why, provider: d.provider, relayConfigured: d.relayCfg, localCandidates: L, remoteCandidates: R, iceErrors: d.errors, seconds: Math.round((Date.now() - d.t0) / 1000), connectionState: pe.pc.connectionState, iceConnectionState: pe.pc.iceConnectionState };
+    console.warn('[voice] 連線失敗', JSON.stringify(info));
+    callout(`${NAMES[s] || ''} 語音連線失敗：${why}`);
+    this.lastDiag = info;
+  },
+  retry() {                                   // 點「語音連線失敗」→ 重新加入語音（重新協商所有連線）
+    if (!this.on) return;
+    for (const k of Object.keys(this.peers)) this.closePeer(+k);
+    this.staleVid = this.myVid; this.myVid = null; IceCfg.v = null;
+    IceCfg.get().then(v => { this.ice = v; Net.send({ t: 'vjoin', muted: this.muted }); });
+    callout('重新連線語音…');
   },
   async flush(pe) { for (const c of pe.q.splice(0)) { try { await pe.pc.addIceCandidate(c); } catch (e) { } } },
   closePeer(s) {
@@ -1112,9 +1210,10 @@ const Voice = {
       if (av) { av.classList.toggle('vc-speak', !!(st && this.speak[s])); av.classList.toggle('vc-in', !!st); }
       let b = document.getElementById('vcb' + s);
       if (!st) { if (b) b.style.display = 'none'; continue; }
-      if (!b) { b = document.createElement('button'); b.id = 'vcb' + s; b.className = 'vcBadge'; b.onclick = e => { e.stopPropagation(); if (s === 0) this.toggleMute(); else this.toggleLocalMute(s); }; document.body.appendChild(b); }
+      if (!b) { b = document.createElement('button'); b.id = 'vcb' + s; b.className = 'vcBadge'; b.onclick = e => { e.stopPropagation(); if (s === 0) return this.toggleMute(); const pe = this.peers[s]; if (pe && pe.state === 'failed') { callout('語音連線失敗：' + (pe.why || '網路無法連線') + '。再試一次…'); this.retry(); } else this.toggleLocalMute(s); }; document.body.appendChild(b); }
       const txt = { on: '🎤', muted: '🔇', local: '🔈✕', connecting: '🎤…', failed: '⚠️ 語音連線失敗' }[st];
-      if (b.dataset.st !== st) { b.textContent = txt; b.dataset.st = st; b.className = 'vcBadge ' + st + (b.classList.contains('sm') ? ' sm' : ''); b.title = s === 0 ? '點一下切換靜音' : '點一下在你這邊關掉／打開這位的聲音'; }
+      if (b.dataset.st !== st) { b.textContent = txt; b.dataset.st = st; b.className = 'vcBadge ' + st + (b.classList.contains('sm') ? ' sm' : ''); b.title = s === 0 ? '點一下切換靜音' : st === 'failed' ? '點一下看原因並重試' : '點一下在你這邊關掉／打開這位的聲音'; }
+      if (st === 'failed') { const pe = this.peers[s]; const t = '語音連線失敗：' + ((pe && pe.why) || '') + '（點一下重試）'; if (b.title !== t) b.title = t; }
       const r = av.getBoundingClientRect();
       if (!r.width) { b.style.display = 'none'; continue; }
       const small = r.width < 44; b.classList.toggle('sm', small);
@@ -1134,6 +1233,7 @@ const Voice = {
   }
 };
 $('#bVc').onclick = () => Voice.join();
+$('#bLeave').onclick = () => tableMenu();
 $('#bVcMute').onclick = () => Voice.toggleMute();
 $('#bVcLeave').onclick = () => Voice.leave();
 setInterval(() => { try { Voice.tick(); } catch (e) { } }, 120);

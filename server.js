@@ -22,6 +22,7 @@ const AI_NAMES = ['小藍', '阿明', '小美', '阿伯', '阿嬤', '王小姐',
 const server = http.createServer((req, res) => {
   const u = (req.url || '/').split('?')[0];
   if (u === '/health' || u === '/healthz') { res.writeHead(200, { 'content-type': 'text/plain' }); return res.end('ok'); }
+  if (u === '/ice') return serveIce(req, res);
   let rel = '';
   try { rel = decodeURIComponent(u === '/' ? '/index.html' : u); } catch (e) { rel = '/x'; }
   const file = path.normalize(path.join(PUB, rel));
@@ -35,6 +36,55 @@ const server = http.createServer((req, res) => {
   if (u === '/favicon.ico') { res.writeHead(204); return res.end(); }
   res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }); res.end('找不到頁面');
 });
+
+/* ---------- 語音的 ICE 伺服器（STUN＋TURN 中繼） ----------
+   聲音優先點對點；雙方網路無法直連（公司防火牆、只開 443、Wi-Fi/有線分開的網段…）才走 TURN 中繼。
+   TURN 帳密在伺服器這邊產生「短效」的，金鑰不會送到瀏覽器。依環境變數選一種（都沒設就用 Open Relay 的公開 static-auth）：
+   1. CF_TURN_KEY_ID + CF_TURN_API_TOKEN       Cloudflare Realtime TURN（免費額度，需 Cloudflare 帳號）
+   2. METERED_DOMAIN + METERED_SECRET_KEY 或 METERED_API_KEY   metered.ca Open Relay 免費方案（需註冊）
+   3. TURN_URLS + TURN_SECRET                    自架 coturn（use-auth-secret，HMAC 短效帳密）
+   4. TURN_URLS + TURN_USERNAME + TURN_CREDENTIAL 固定帳密
+   TURN_DEFAULT=off 可以關掉預設的公開 static-auth 中繼。 */
+const STUN = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
+const ICE_TTL = 6 * 3600;
+const OPENRELAY = { urls: ['turn:staticauth.openrelay.metered.ca:80', 'turn:staticauth.openrelay.metered.ca:80?transport=tcp', 'turn:staticauth.openrelay.metered.ca:443', 'turns:staticauth.openrelay.metered.ca:443?transport=tcp'], secret: 'openrelayprojectsecret' };
+let iceCache = null;
+function hmacTurn(urls, secret) {
+  const username = `${Math.floor(Date.now() / 1000) + ICE_TTL}:mj${crypto.randomBytes(3).toString('hex')}`;
+  return { urls, username, credential: crypto.createHmac('sha1', secret).update(username).digest('base64') };
+}
+const splitUrls = v => String(v || '').split(',').map(x => x.trim()).filter(Boolean);
+async function iceServers() {
+  const E = process.env;
+  if (E.CF_TURN_KEY_ID && E.CF_TURN_API_TOKEN) {
+    if (iceCache && iceCache.until > Date.now()) return iceCache.v;
+    const r = await fetch(`https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(E.CF_TURN_KEY_ID)}/credentials/generate-ice-servers`, {
+      method: 'POST', headers: { authorization: 'Bearer ' + E.CF_TURN_API_TOKEN, 'content-type': 'application/json' }, body: JSON.stringify({ ttl: ICE_TTL }) });
+    if (!r.ok) throw new Error('cloudflare ' + r.status);
+    const j = await r.json(); const list = Array.isArray(j.iceServers) ? j.iceServers : [j.iceServers];
+    const v = { provider: 'cloudflare', iceServers: STUN.concat(list.filter(Boolean)) };
+    iceCache = { v, until: Date.now() + (ICE_TTL - 600) * 1000 }; return v;
+  }
+  if (E.METERED_DOMAIN && (E.METERED_SECRET_KEY || E.METERED_API_KEY)) {
+    if (iceCache && iceCache.until > Date.now()) return iceCache.v;
+    const q = E.METERED_API_KEY ? 'apiKey=' + encodeURIComponent(E.METERED_API_KEY) : 'secretKey=' + encodeURIComponent(E.METERED_SECRET_KEY);
+    const r = await fetch(`https://${E.METERED_DOMAIN.replace(/^https?:\/\//, '')}/api/v1/turn/credentials?${q}`);
+    if (!r.ok) throw new Error('metered ' + r.status);
+    const v = { provider: 'metered', iceServers: STUN.concat(await r.json()) };
+    iceCache = { v, until: Date.now() + 3600 * 1000 }; return v;
+  }
+  if (E.TURN_URLS && E.TURN_SECRET) return { provider: 'coturn', iceServers: STUN.concat([hmacTurn(splitUrls(E.TURN_URLS), E.TURN_SECRET)]) };
+  if (E.TURN_URLS && E.TURN_USERNAME) return { provider: 'static', iceServers: STUN.concat([{ urls: splitUrls(E.TURN_URLS), username: E.TURN_USERNAME, credential: E.TURN_CREDENTIAL || '' }]) };
+  if (E.TURN_DEFAULT === 'off') return { provider: 'none', iceServers: STUN };
+  return { provider: 'openrelay', iceServers: STUN.concat([hmacTurn(OPENRELAY.urls, OPENRELAY.secret)]) };
+}
+function serveIce(req, res) {
+  const hd = { 'content-type': 'application/json', 'cache-control': 'no-store', 'access-control-allow-origin': '*' };
+  const now = Date.now();
+  if (over(ipLog(clientIp(req)).ice, LIM.iceIp, now)) { res.writeHead(429, hd); return res.end('{"error":"slow"}'); }
+  iceServers().then(v => { res.writeHead(200, hd); res.end(JSON.stringify(Object.assign({ ttl: ICE_TTL }, v))); },
+    e => { console.error('ice', e.message); res.writeHead(200, hd); res.end(JSON.stringify({ ttl: 600, provider: 'stun-only', error: 'turn unavailable', iceServers: STUN })); });
+}
 
 /* ---------- 房間 ---------- */
 const rooms = new Map();
@@ -57,14 +107,15 @@ const LIM = {
   failIp: [12, 10 * 60 * 1000],      // 每個 IP 10 分鐘最多 12 次「找不到房號」
   createIp: [12, 10 * 60 * 1000],    // 每個 IP 10 分鐘最多開 12 間房
   msgConn: [400, 10 * 1000],         // 每條連線 10 秒最多 400 則訊息（超過就斷線）
-  bcastConn: [40, 10 * 1000]         // 會廣播給全房的動作（語音狀態、改名、準備…）10 秒最多 40 次
+  bcastConn: [40, 10 * 1000],        // 會廣播給全房的動作（語音狀態、改名、準備…）10 秒最多 40 次
+  iceIp: [60, 10 * 60 * 1000]        // /ice（語音中繼帳密）每個 IP 10 分鐘 60 次
 };
 Object.keys(LIM).forEach(k => { const e = process.env['LIM_' + k.toUpperCase()]; if (e) LIM[k] = [+e, LIM[k][1]]; });   // 測試用
 const MAX_ROOMS = +process.env.MAX_ROOMS || 2000;
 const LOBBY_RECLAIM_MS = +process.env.LOBBY_RECLAIM_MS || 60 * 1000;   // 大廳裡離線超過 1 分鐘的座位，房間滿時可讓新玩家遞補（給新 token，不沿用舊的）
 const ipLogs = new Map();            // ip → { join:[], fail:[], create:[] }
 function over(log, [max, win], now) { while (log.length && now - log[0] > win) log.shift(); if (log.length >= max) return true; log.push(now); return false; }
-function ipLog(ip) { let l = ipLogs.get(ip); if (!l) ipLogs.set(ip, l = { join: [], fail: [], create: [], t: 0 }); l.t = Date.now(); return l; }
+function ipLog(ip) { let l = ipLogs.get(ip); if (!l) ipLogs.set(ip, l = { join: [], fail: [], create: [], ice: [], t: 0 }); l.t = Date.now(); return l; }
 function clientIp(req) {
   const h = req.headers || {};
   const v = h['cf-connecting-ip'] || h['true-client-ip'] || String(h['x-forwarded-for'] || '').split(',')[0].trim() || (req.socket && req.socket.remoteAddress) || '?';
@@ -82,7 +133,7 @@ function fillAI(room) {
   const used = new Set(room.seats.filter(Boolean).map(x => x.ci));
   for (let s = 0; s < 4; s++) {
     if (room.seats[s]) { room.ai[s] = null; continue; }
-    if (room.ai[s] && !used.has(room.ai[s].ci)) { used.add(room.ai[s].ci); continue; }
+    if (room.ai[s] && (room.ai[s].stand || !used.has(room.ai[s].ci))) { used.add(room.ai[s].ci); continue; }
     const pool = AI_NAMES.map((_, i) => i).filter(i => !used.has(i));
     const ci = pool[Math.floor(Math.random() * pool.length)];
     used.add(ci); room.ai[s] = { ci, name: AI_NAMES[ci] };
@@ -266,7 +317,7 @@ wss.on('connection', (ws, req) => {
   });
   ws.on('close', () => detach(ws));
 });
-const BCAST = new Set(['start', 'again', 'lock', 'vjoin', 'vleave', 'vmute', 'level', 'profile']);
+const BCAST = new Set(['start', 'again', 'lock', 'vjoin', 'vleave', 'vmute', 'level', 'profile', 'leave', 'dissolve']);
 // 玩家回覆只留下需要的欄位、型別正確（牌局邏輯還會再對照可用選項驗證一次）
 function cleanAct(d) {
   if (!d || typeof d !== 'object' || Array.isArray(d)) return {};
@@ -368,7 +419,8 @@ function handle(ws, m) {
       break;
     }
     case 'profile': if (room.phase === 'lobby') { p.name = cleanName(m.name); p.ci = cleanCi(m.ci); broadcastRoom(room); } break;
-    case 'leave': detachSeat(ws, true); send(ws, { t: 'left' }); break;
+    case 'leave': detachSeat(ws, true); send(ws, { t: 'left' }); break;      // 離開牌桌：座位交給電腦（牌局中）或空出（大廳），token 作廢
+    case 'dissolve': if (p.host) dissolveRoom(room, '房主解散了牌桌'); break;
   }
 }
 function detachSeat(ws, leaving) {
@@ -376,10 +428,23 @@ function detachSeat(ws, leaving) {
   const { room, seat } = c; const p = room.seats[seat];
   detach(ws);
   if (leaving && room.seats[seat] === p) {
-    room.seats[seat] = null; room.ready.delete(seat);
-    if (p.host) { const n = room.seats.find(x => x && x.ws) || room.seats.find(Boolean); if (n) n.host = true; }
+    room.seats[seat] = null; room.ready.delete(seat); p.lock = null;
+    if (room.phase !== 'lobby') room.ai[seat] = { ci: p.ci, name: p.name.slice(0, 5) + '(電腦)', stand: true };   // 牌局中：同一個頭像改由電腦代打
+    if (!room.seats.some(Boolean)) return dissolveRoom(room, '');            // 沒有真人了 → 房間直接收掉
+    if (p.host) { const n = room.seats.find(x => x && x.ws) || room.seats.find(Boolean); if (n) n.host = true; }   // 房主離開 → 交給其他真人
     broadcastRoom(room); maybeAgain(room);
   }
+}
+function dissolveRoom(room, msg) {
+  if (room.dead) return;
+  room.dead = true; rooms.delete(room.code);
+  for (const q of room.seats) {
+    if (!q) continue;
+    if (q.pending) { clearTimeout(q.pending.timer); q.pending = null; }
+    if (q.ws) { send(q.ws, { t: 'dissolved', msg }); q.ws.ctx = null; }
+    q.ws = null; q.token = null;
+  }
+  console.log('room dissolved', room.code);
 }
 /* 心跳 + 清理空房 */
 setInterval(() => {

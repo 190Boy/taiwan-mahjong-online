@@ -158,6 +158,8 @@ table.tai tr.tot td{font-size:18px;border-bottom:none;color:#ffeb3b}
 .pkBtns{display:flex;gap:8px;justify-content:center;margin-top:8px}
 .smallbtn{background:rgba(255,255,255,.14);color:#fff;border:1px solid rgba(255,255,255,.35);border-radius:10px;padding:6px 14px;font-size:14px;cursor:pointer;font-family:inherit}
 details.rules summary{cursor:pointer;font-weight:700}
+#cfmOv{z-index:60}.dialog.cfm{max-width:360px;position:relative}.cfm p{line-height:1.6;opacity:.92}.cfmBtns{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}.cfmBtns .big-btn{font-size:17px;padding:10px 18px}
+.big-btn.danger,.smallbtn.danger{background:linear-gradient(#e53935,#b71c1c);color:#fff}.cfmX{position:absolute;top:8px;right:10px;background:none;border:0;color:#fff;font-size:20px;cursor:pointer}
 .taiTbl{margin-top:6px;line-height:1.55}
 .pay .av{--avw:clamp(44px,11vw,76px);margin:2px auto 4px}
 .opp.active .av,.me.active .av{box-shadow:0 0 0 2px #ffd54f,0 0 10px #ffd54f}
@@ -295,6 +297,7 @@ table.stt .av{--avw:30px;margin:auto}
   <button id="bChar" title="更換角色">👤<span class="lbl"> 角色</span></button>
   <button id="bChat" title="快捷聊天" style="display:none">💬<span class="lbl"> 聊天</span></button>
   <button id="bVc" title="語音通話（會詢問麥克風權限）" style="display:none">🎤<span class="lbl"> 加入語音</span></button><button id="bVcMute" title="麥克風靜音" style="display:none">🎙️<span class="lbl"> 靜音</span></button><button id="bVcLeave" title="離開語音" style="display:none">📴<span class="lbl"> 離開語音</span></button>
+  <button id="bLeave" title="離開／解散牌桌" style="display:none">🚪<span class="lbl"> 牌桌</span></button>
   <button id="bStats" title="戰績">📊<span class="lbl"> 戰績</span></button>
   <select id="aiLevel" title="電腦難度"><option value="easy">簡單</option><option value="normal">普通</option><option value="hard">困難</option></select>
   <button id="bSound" title="音效開關">🔊<span class="lbl"> 音效</span></button>
@@ -379,12 +382,13 @@ table.stt .av{--avw:30px;margin:auto}
   <button class="big-btn" id="startBtn">開始遊戲</button>
  </div>
 </div>
+<div id="cfmOv" class="overlay hidden"><div class="dialog cfm"><button id="cfmX" class="cfmX" style="display:none" aria-label="關閉">✕</button><h2 id="cfmTitle"></h2><p id="cfmMsg"></p><div class="cfmBtns"><button class="big-btn alt" id="cfmNo">取消</button><button class="big-btn" id="cfmOk">確定</button></div></div></div>
 <div id="statsOv" class="overlay hidden"><div class="dialog" id="statsBox"></div></div>
 <div id="chatPal" class="hidden"></div>
 <div id="resultOv" class="overlay hidden"><div class="dialog" id="resultBox"></div></div>
 
-<script src="logic.js?v=9"></script>
-<script src="avatar-img.js?v=9"></script>
-<script src="app.js?v=9"></script>
+<script src="logic.js?v=10"></script>
+<script src="avatar-img.js?v=10"></script>
+<script src="app.js?v=10"></script>
 </body>
 </html>

@@ -6,7 +6,7 @@
   "private": true,
   "scripts": {
     "start": "node server.js",
-    "test": "node test/rules.test.js && node test/server.test.js",
+    "test": "node test/rules.test.js && node test/server.test.js && node test/ice.test.js",
     "bench": "node test/ai-bench.js 100",
     "ai-eval": "node test/ai-eval.js 1000 4"
   },
