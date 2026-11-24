@@ -704,7 +704,7 @@ const LBL = ['你', '下家（右）', '對家（上）', '上家（左）'];
 function renderRoom() {
   const r = UI.room; if (!r) return;
   const seats = r.seats.map((p, i) => `<div class="rmSeat ${i === 0 ? 'mine' : ''}" data-vs="${i}">${avatarHTML(p.ci, 'idle', 'pk')}<div class="nm">${p.name}</div>
-    <div>${p.host ? '<span class="tag host">房主</span> ' : ''}${p.human ? (p.online ? '<span class="tag ok">已連線</span>' : '<span class="tag off">離線</span>') : '<span class="tag ai">空位・電腦</span>'}${p.voice ? (p.voice.muted ? ' <span class="tag vc">🔇 靜音</span>' : ' <span class="tag vc">🎤 語音中</span>') : ''}</div><small>${LBL[i]}</small></div>`).join('');
+    <div class="rmTags">${p.host ? '<span class="tag host">房主</span>' : ''}${p.human ? (p.online ? '<span class="tag ok">已連線</span>' : '<span class="tag off">離線</span>') : '<span class="tag ai">空位・電腦</span>'}${p.voice ? (p.voice.muted ? '<span class="tag vc">🔇 靜音</span>' : '<span class="tag vc">🎤 語音中</span>') : ''}</div><small>${LBL[i]}</small></div>`).join('');
   const humans = r.seats.filter(p => p.human).length;
   const srvQ = new URLSearchParams(location.search).get('server'); const xq = srvQ ? '&server=' + encodeURIComponent(srvQ) : '';
   const link = location.origin + location.pathname + '?room=' + r.code + xq;
