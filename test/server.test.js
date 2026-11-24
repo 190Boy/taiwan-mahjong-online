@@ -114,7 +114,7 @@ function autoplay(c) {
       if (m.t === 'state' && m.view && m.view.players[0].melds.some(x => x.type === 'chi')) bad = true;
     });
     A.send({ t: 'start' });
-    for (let i = 0; i < 3; i++) { const r = await A.next(m => m.t === 'result', 20000); if (!r) break; A.send({ t: 'again' }); }
+    for (let i = 0; i < 12 && (i < 3 || !seen); i++) { const r = await A.next(m => m.t === 'result', 20000); if (!r) break; A.send({ t: 'again' }); }   // 隨機牌局不一定有吃牌機會：最多打到 12 局
     ok(seen > 0 && !bad, `吃牌傳 5 張的 seq（試了 ${seen} 次）→ 一律當作「過」，沒有出現 6 張的組、手牌數正常`);
     await A.close();
   }
